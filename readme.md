@@ -48,7 +48,7 @@ Follow these steps to get Mavis running on your local machine.
 ### Clone the Repository
 Open your terminal and run:
 ```bash
-git clone [https://github.com/DhruvR-16/Mavis.git](https://github.com/DhruvR-16/Mavis.git)
+git clone https://github.com/DhruvR-16/Mavis
 cd Mavis
 ```
 
