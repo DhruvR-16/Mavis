@@ -25,7 +25,7 @@ THRESH = {
     "press_top_elbow_angle": 160,   # elbow almost straight when pressed
     "press_bottom_elbow_angle": 65,
     "shrug_allowed_px": 120,  # pixel distance from hip line to shoulder line allowed
-    "torso_lean_ratio": 0.7,
+    "torso_lean_ratio": 0.7q,
     "upright_row_top_h": 30,  # pixels above shoulder for elbows
 }
 

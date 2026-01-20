@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mavis - Monitor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="monitor-header">
+            <h1 id="exercise-title">Analysis</h1>
+            <a href="index.html" class="btn-secondary">Back to Menu</a>
+        </header>
+
+        <!-- Video Player -->
+        <div class="viewer">
+            <!-- Main Feed -->
+            <video id="webcam" autoplay playsinline muted></video>
+            
+            <!-- Inactivity Overlay -->
+            <div id="timeout-overlay" class="overlay-msg">
+                <h3>Session Paused</h3>
+                <p>Camera turned off due to inactivity.</p>
+                <br>
+                <button id="resume-btn" class="btn-primary">Resume Session</button>
+            </div>
+            
+            <!-- Permission Error -->
+            <div id="error-msg" class="overlay-msg" style="background: var(--error);">
+                <h3>Camera Error</h3>
+                <p>Please allow camera access to continue.</p>
+            </div>
+        </div>
+
+        <!-- Live Stats (Placeholder for Frontend Demo) -->
+        <div class="stats-panel">
+            <div class="stat-item">
+                <div class="stat-label">Status</div>
+                <div class="stat-value" style="color: var(--accent);">Active</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Reps</div>
+                <div class="stat-value">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Feedback</div>
+                <div class="stat-value" id="feedback-text" style="font-size: 1rem; padding-top: 5px;">Ready</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -3,3 +3,14 @@ venv/
 .env
 __pycache__/
 *.pyc
+.idea/
+models/
+
+# Ignore data folder contents by default
+data/*
+
+# Allow specific video folders
+!data/videos/
+data/videos/*
+!data/videos/shoulder press/
+!data/videos/barbell biceps curl/

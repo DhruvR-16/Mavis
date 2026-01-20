@@ -1,207 +1,279 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import tensorflow as tf
+import pickle
+import os
+from collections import deque
 from enum import Enum
 
+# Import Feature Extractor
+try:
+    from analyzer.feature_extractor import FeatureExtractor
+except ImportError:
+    import sys
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'analyzer'))
+    from feature_extractor import FeatureExtractor
 
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+# Constants
+SEQUENCE_LENGTH = 30
+CONFIDENCE_THRESHOLD = 0.7
+MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 
+# State Machine
 class Stage(Enum):
     DOWN = 1
     UP = 2
 
-def calculate_angle(a, b, c):
-    a = np.array(a)  # First point
-    b = np.array(b)  # Mid point (vertex)
-    c = np.array(c)  # End point
-    
+# Smoothing Class
+class LandmarkSmoother:
+    def __init__(self, alpha=0.5):
+        self.alpha = alpha
+        self.prev_landmarks = None
 
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
-    
-    if angle > 180.0:
-        angle = 360 - angle
+    def smooth(self, current_landmarks):
+        if self.prev_landmarks is None:
+            self.prev_landmarks = current_landmarks
+            return current_landmarks
         
-    return angle
-
-class BicepCurlAnalyzer:
-    def __init__(self):
-        # Thresholds and constants
-        self.UP_THRESHOLD = 60      # Angle to be considered 'UP'
-        self.DOWN_THRESHOLD = 130   # Angle to be considered 'DOWN'
-        self.VISIBILITY_THRESHOLD = 0.5
-        self.ELBOW_DRIFT_THRESHOLD_PX = 35 
-        # NEW: Minimum frames for a rep to count (prevents cheating with speed)
-        self.MIN_REP_DURATION_FRAMES = 10 
-
-
-        self.left_arm = {
-            "stage": Stage.DOWN,
-            "counter": 0,
-            "feedback": "",
-            "anchor_elbow_x": 0,
-            "form_error": False,
-            "start_frame": 0 # NEW: To track rep duration
-        }
-
-        self.right_arm = {
-            "stage": Stage.DOWN,
-            "counter": 0,
-            "feedback": "",
-            "anchor_elbow_x": 0,
-            "form_error": False,
-            "start_frame": 0 # NEW: To track rep duration
-        }
-        
-    def _process_arm(self, arm_state, shoulder, elbow, wrist, hip, frame_counter):
-        arm_angle = calculate_angle(shoulder, elbow, wrist)
-        
-        #  FORM CHECKING (during the 'UP' phase) 
-        if arm_state["stage"] == Stage.UP:
-            drift_distance = abs(elbow[0] - arm_state["anchor_elbow_x"])
-            if drift_distance > self.ELBOW_DRIFT_THRESHOLD_PX:
-                arm_state["feedback"] = "ERROR: Keep Elbow Still"
-                arm_state["form_error"] = True
-            else:
-                if arm_state["form_error"] and "Elbow" in arm_state["feedback"]:
-                    arm_state["form_error"] = False
-                    arm_state["feedback"] = ""
-
-        #  STATE MACHINE (Rep Counter) 
-        if arm_angle < self.UP_THRESHOLD:
-            if arm_state["stage"] == Stage.DOWN:
-                # Transition from DOWN to UP
-                arm_state["stage"] = Stage.UP
-                arm_state["anchor_elbow_x"] = elbow[0] 
-                arm_state["form_error"] = False
-                # NEW: Record the starting frame of the rep
-                arm_state["start_frame"] = frame_counter
-                
-                # Initial drift check
-                drift_distance = abs(elbow[0] - arm_state["anchor_elbow_x"])
-                if drift_distance > self.ELBOW_DRIFT_THRESHOLD_PX:
-                    arm_state["feedback"] = "ERROR: Keep Elbow Still"
-                    arm_state["form_error"] = True
-
-        elif arm_angle > self.DOWN_THRESHOLD:
-            if arm_state["stage"] == Stage.UP:
-                # Transition from UP to DOWN
-                arm_state["stage"] = Stage.DOWN
-                
-                # NEW: Calculate rep duration and check for speed
-                rep_duration = frame_counter - arm_state["start_frame"]
-                if rep_duration < self.MIN_REP_DURATION_FRAMES:
-                    arm_state["feedback"] = "ERROR: Too Fast!"
-                    arm_state["form_error"] = True
-                
-                # Final check: If no form errors were flagged during the rep, count it.
-                if not arm_state["form_error"]:
-                    arm_state["counter"] += 1
-                    arm_state["feedback"] = "Good Rep!"
-                else:
-                    # If feedback wasn't already set to "Too Fast!", use a generic message.
-                    if "Fast" not in arm_state["feedback"]:
-                         arm_state["feedback"] = "Bad Form - Reset"
-
-        return arm_angle
-
-    def analyze_frame(self, frame, frame_counter):
-        h, w, _ = frame.shape
-
-        #  Pose Detection 
-        with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-            frame = cv2.flip(frame, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(rgb_frame)
-            frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-
-            #  Landmark Extraction and Processing 
-            if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                
-                try:
-                    # LEFT ARM
-                    l_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
-                    l_elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y * h]
-                    l_wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y * h]
-                    l_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y * h]
-
-                    if landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].visibility > self.VISIBILITY_THRESHOLD:
-                        left_angle = self._process_arm(self.left_arm, l_shoulder, l_elbow, l_wrist, l_hip, frame_counter)
-                        cv2.putText(frame, str(int(left_angle)), tuple(np.multiply(l_elbow, [1, 1]).astype(int)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-
-                    # RIGHT ARM
-                    r_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x * w, landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y * h]
-                    r_elbow = [landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].x * w, landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].y * h]
-                    r_wrist = [landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value].x * w, landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value].y * h]
-                    r_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x * w, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y * h]
-                    
-                    if landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].visibility > self.VISIBILITY_THRESHOLD:
-                        right_angle = self._process_arm(self.right_arm, r_shoulder, r_elbow, r_wrist, r_hip, frame_counter)
-                        cv2.putText(frame, str(int(right_angle)), tuple(np.multiply(r_elbow, [1, 1]).astype(int)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                except Exception as e:
-                    pass
-
-                # Skeleton Coloring
-                is_good_form = not (self.left_arm["form_error"] or self.right_arm["form_error"])
-                skeleton_color = (0, 255, 0) if is_good_form else (0, 0, 255)
-                
-                landmark_drawing_spec = mp_drawing.DrawingSpec(color=skeleton_color, thickness=2, circle_radius=2)
-                connection_drawing_spec = mp_drawing.DrawingSpec(color=skeleton_color, thickness=2, circle_radius=2)
-                
-                mp_drawing.draw_landmarks(
-                    frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec, connection_drawing_spec)
-
-        self._draw_ui(frame)
-        return frame
-
-    def _draw_ui(self, frame):
-        h, w, _ = frame.shape
-        
-        cv2.rectangle(frame, (0, 0), (250, 120), (245, 117, 16), -1)
-        cv2.putText(frame, 'LEFT ARM', (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, 'REPS', (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, str(self.left_arm["counter"]), (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, 'STAGE', (120, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, self.left_arm["stage"].name, (120, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2, cv2.LINE_AA)
-
-        cv2.rectangle(frame, (w - 250, 0), (w, 120), (245, 117, 16), -1)
-        cv2.putText(frame, 'RIGHT ARM', (w - 235, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, 'REPS', (w - 235, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, str(self.right_arm["counter"]), (w - 240, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, 'STAGE', (w - 130, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, self.right_arm["stage"].name, (w - 130, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2, cv2.LINE_AA)
-
-        feedback = self.left_arm["feedback"] if self.left_arm["feedback"] else self.right_arm["feedback"]
-        color = (0, 0, 255) if "ERROR" in feedback or "Bad" in feedback else (0, 255, 0)
-        cv2.rectangle(frame, (0, h - 60), (w, h), (0, 0, 0), -1)
-        cv2.putText(frame, feedback, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2, cv2.LINE_AA)
-
-def main():
-    cap = cv2.VideoCapture(0)
-    analyzer = BicepCurlAnalyzer()
-    frame_counter = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        frame_counter += 1
-        processed_frame = analyzer.analyze_frame(frame, frame_counter)
-        
-        cv2.imshow('Bicep Curl AI Trainer', processed_frame)
-        
-        if cv2.waitKey(10) & 0xFF == ord('q'):
-            break
+        smoothed = []
+        for i, lm in enumerate(current_landmarks):
+            prev = self.prev_landmarks[i]
+            # Smooth x, y, z, and visibility
+            sx = self.alpha * lm.x + (1 - self.alpha) * prev.x
+            sy = self.alpha * lm.y + (1 - self.alpha) * prev.y
+            sz = self.alpha * lm.z + (1 - self.alpha) * prev.z
+            sv = self.alpha * lm.visibility + (1 - self.alpha) * prev.visibility
             
-    cap.release()
-    cv2.destroyAllWindows()
+            # Create a mock object or struct (MediaPipe landmarks are protobufs, tough to modify directly)
+            # We will return a simple object/dict wrapper for the extractor
+            class SmoothPoint:
+                def __init__(self, x, y, z, v):
+                    self.x, self.y, self.z, self.visibility = x, y, z, v
+            
+            smoothed.append(SmoothPoint(sx, sy, sz, sv))
+            
+        self.prev_landmarks = smoothed
+        return smoothed
+
+class BicepAnalyzer:
+    def __init__(self):
+        # Tools
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.extractor = FeatureExtractor()
+        self.smoother = LandmarkSmoother(alpha=0.6) # 0.6 = moderate smoothing
+        
+        # AI Logic
+        self.lstm_model = None
+        self.scaler = None
+        self.label_encoder = None
+        self.sequence_buffer = deque(maxlen=SEQUENCE_LENGTH)
+        self.current_action = "Waiting..."
+        self.confidence = 0.0
+        
+        # Form Logic
+        self.stage = Stage.DOWN
+        self.counter = 0
+        self.bad_reps = 0
+        self.feedback = "Start Curls"
+        self.form_color = (0, 255, 0) # Green
+        
+        # Physics state
+        self.prev_time = 0
+        self.rep_start_time = 0
+        self.elbow_x_history = deque(maxlen=30)
+        self.start_elbow_x = 0
+        
+        self.load_models()
+        
+        # Heuristics - STRICT MODE
+        self.UP_THRESH = 45 # Stricter than 50
+        self.DOWN_THRESH = 160 # Needs almost full extension
+        self.ELBOW_DRIFT_TOLERANCE = 0.1 # 10% of frame width (approx)
+        self.MIN_REP_TIME = 1.0 # Seconds
+
+    def load_models(self):
+        try:
+            model_path = os.path.join(MODELS_DIR, 'bicep_lstm.h5')
+            scaler_path = os.path.join(MODELS_DIR, 'scaler.pkl')
+            le_path = os.path.join(MODELS_DIR, 'label_encoder.pkl')
+            
+            # Robust Load
+            try:
+                self.lstm_model = tf.keras.models.load_model(model_path)
+            except (AttributeError, ImportError):
+                import keras
+                self.lstm_model = keras.models.load_model(model_path)
+                
+            with open(scaler_path, 'rb') as f:
+                self.scaler = pickle.load(f)
+            with open(le_path, 'rb') as f:
+                self.label_encoder = pickle.load(f)
+                
+            print("Models loaded successfully.")
+        except Exception as e:
+            print(f"Error loading models: {e}")
+            print("Analyzer will run in GEOMETRY ONLY mode.")
+
+    def predict_action(self, features):
+        if self.lstm_model is None:
+            return "Bicep Curl" # Default fallback
+            
+        scaled_feat = self.scaler.transform([features])[0]
+        self.sequence_buffer.append(scaled_feat)
+        
+        if len(self.sequence_buffer) == SEQUENCE_LENGTH:
+            seq = np.array(self.sequence_buffer)[np.newaxis, ...]
+            preds = self.lstm_model.predict(seq, verbose=0)[0]
+            idx = np.argmax(preds)
+            
+            self.confidence = preds[idx]
+            label = self.label_encoder.inverse_transform([idx])[0]
+            
+            # Confidence Check
+            if self.confidence < CONFIDENCE_THRESHOLD:
+                return "Unknown"
+                
+            return label
+        
+        return "Waiting..."
+
+    def analyze_form(self, features, landmarks):
+        import time
+        current_time = time.time()
+        
+        # features[1] is Elbow Angle
+        elbow_angle = features[1]
+        
+        # Extract raw coordinates for drift check (Left Elbow)
+        # Using feature_extractor logic, index 13 is Left Elbow
+        elbow_curr_x = landmarks[13].x 
+        
+        # State Machine with Strict Checks
+        if elbow_angle > self.DOWN_THRESH:
+            # Check if we were previously UP
+            if self.stage == Stage.UP:
+                duration = current_time - self.rep_start_time
+                if duration > self.MIN_REP_TIME:
+                    self.stage = Stage.DOWN
+                    self.counter += 1
+                    self.feedback = "Good Rep!"
+                    self.form_color = (0, 255, 0)
+                else:
+                    self.feedback = "Too Fast!"
+                    self.bad_reps += 1
+                    self.form_color = (0, 0, 255)
+                    self.stage = Stage.DOWN # Reset anyway
+            else:
+                self.feedback = "Start Curls"
+                self.start_elbow_x = elbow_curr_x # Reset anchor
+
+        elif elbow_angle < self.UP_THRESH:
+            if self.stage == Stage.DOWN:
+                self.stage = Stage.UP
+                self.rep_start_time = current_time
+                self.start_elbow_x = elbow_curr_x
+            
+            # While holding UP or moving, check drift
+            drift = abs(elbow_curr_x - self.start_elbow_x)
+            if drift > self.ELBOW_DRIFT_TOLERANCE:
+                self.feedback = "Fix Elbow!"
+                self.form_color = (0, 0, 255)
+            else:
+                self.feedback = "Squeeze!"
+
+        # General Guidance
+        if self.stage == Stage.UP and self.feedback != "Fix Elbow!":
+            self.feedback = "Lower Slowly"
+        elif self.stage == Stage.DOWN and "Good" not in self.feedback and "Fast" not in self.feedback:
+             if elbow_angle < self.DOWN_THRESH:
+                 self.feedback = "Full Extension"
+
+    def run(self):
+        cap = cv2.VideoCapture(0)
+        
+        with self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: break
+                
+                # Preprocessing
+                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # Flip for mirror view (matches shoulders.py)
+                image = cv2.flip(image, 1) 
+                
+                image.flags.writeable = False
+                results = pose.process(image)
+                
+                image.flags.writeable = True
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                h, w, _ = image.shape
+                
+                if results.pose_landmarks:
+                    try:
+                        raw_landmarks = results.pose_landmarks.landmark
+                        
+                        # 0. Apply Smoothing
+                        landmarks = self.smoother.smooth(raw_landmarks)
+                        
+                        # 1. Extract Features
+                        features = self.extractor.get_features(landmarks)
+                        
+                        # 2. AI Prediction
+                        self.current_action = self.predict_action(features)
+                        
+                        # 3. Logic Switch
+                        if self.current_action == "Bicep Curl" or self.lstm_model is None:
+                            self.analyze_form(features, landmarks)
+                            self.form_color = (0, 255, 0)
+                        else:
+                            self.feedback = "Wrong Exercise"
+                            self.form_color = (0, 0, 255)
+                            
+                        # 4. Visualization
+                        # Draw Skeleton
+                        self.mp_drawing.draw_landmarks(
+                            image, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
+                             self.mp_drawing.DrawingSpec(color=self.form_color, thickness=2, circle_radius=2),
+                             self.mp_drawing.DrawingSpec(color=self.form_color, thickness=2, circle_radius=2)
+                        )
+                        
+                        # UI Overlay (Shoulder Trainer Style)
+                        # Top Left: Exercise Name
+                        cv2.putText(image, "Exercise: Bicep Curl", (10, 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+                        
+                        # Top Right: Counters
+                        cv2.putText(image, f"Count: {self.counter}", (w - 200, 40), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.putText(image, f"Bad: {self.bad_reps}", (w - 200, 80), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        
+                        # Bottom: Feedback
+                        cv2.putText(image, self.feedback, (10, h - 40), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        
+                        # Debug: AI Confidence below Exercise Name
+                        cv2.putText(image, f"AI Conf: {self.confidence:.2f}", (10, 60), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+                    except Exception as e:
+                        # print(e)
+                        pass
+
+                    except Exception as e:
+                        # print(e)
+                        pass
+                
+                cv2.imshow('Mavis - Bicep Analyzer', image)
+                
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+                    
+        cap.release()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    app = BicepAnalyzer()
+    app.run()
