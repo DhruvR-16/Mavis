@@ -35,7 +35,7 @@ let repStartTime = 0;
 // Workout Specific Vars
 let elbowAngle = 0; // Displayed angle
 let anchorElbowX = 0;
-let currentFormColor = "#E2FF00"; // Volt Yellow by default
+let currentFormColor = "#2563EB"; // True Blue by default
 let activeSide = "left";
 
 // Recording Timer
@@ -144,30 +144,30 @@ function analyzeBicepForm(landmarks) {
   if (elbowAngle > BICEP_DOWN) {
     if (stage === Stage.UP) { // Completing Rep
       if (now - repStartTime > MIN_REP_TIME_MS) {
-        repCount++; cueTitle = "Correct Form"; feedback = "Excellent Rep!"; feedbackType = "good"; currentFormColor = "#00FF66";
+        repCount++; cueTitle = "Correct Form"; feedback = "Excellent Rep!"; feedbackType = "good"; currentFormColor = "#10B981";
       } else {
-        badRepCount++; cueTitle = "Tempo Control"; feedback = "Too Fast! Slow down"; feedbackType = "bad"; currentFormColor = "#FF3366";
+        badRepCount++; cueTitle = "Tempo Control"; feedback = "Too Fast! Slow down"; feedbackType = "bad"; currentFormColor = "#EF4444";
       }
       stage = Stage.DOWN;
     } else {
-      currentFormColor = "#E2FF00";
+      currentFormColor = "#2563EB";
       if (!feedback.includes("Fast") && !feedback.includes("Excellent")) { cueTitle = "Ready"; feedback = "Curl upwards!"; feedbackType = "info"; }
       anchorElbowX = elbow.x;
     }
   } else if (elbowAngle < BICEP_UP) {
     if (stage === Stage.DOWN) { // Contracting
       stage = Stage.UP; repStartTime = now; anchorElbowX = elbow.x;
-      cueTitle = "Contraction"; feedback = "Squeeze the bicep!"; feedbackType = "good"; currentFormColor = "#00FF66";
+      cueTitle = "Contraction"; feedback = "Squeeze the bicep!"; feedbackType = "good"; currentFormColor = "#10B981";
     }
     // Drift check
     if (Math.abs(elbow.x - anchorElbowX) > BICEP_DRIFT) {
-      cueTitle = "Form Warning"; feedback = "Fix Elbow! Keep it pinned."; feedbackType = "bad"; currentFormColor = "#FF3366";
+      cueTitle = "Form Warning"; feedback = "Fix Elbow! Keep it pinned."; feedbackType = "bad"; currentFormColor = "#EF4444";
     }
   } else {
     // Middle Phase
-    currentFormColor = "#E2FF00";
+    currentFormColor = "#2563EB";
     if (stage === Stage.UP) {
-      if (shoulderAngle > 45) { cueTitle = "Torso Swing"; feedback = "Don't swing back!"; feedbackType = "bad"; currentFormColor = "#FF3366"; }
+      if (shoulderAngle > 45) { cueTitle = "Torso Swing"; feedback = "Don't swing back!"; feedbackType = "bad"; currentFormColor = "#EF4444"; }
       else { cueTitle = "Eccentric"; feedback = "Lower slowly..."; feedbackType = "info"; }
     } else if (stage === Stage.DOWN) {
       cueTitle = "Concentric"; feedback = "Keep going up!"; feedbackType = "info";
@@ -175,7 +175,7 @@ function analyzeBicepForm(landmarks) {
   }
 
   if (stage === Stage.DOWN && elbowAngle < BICEP_DOWN && elbowAngle > BICEP_UP && elbowAngle < 120) {
-    cueTitle = "ROM Check"; feedback = "Extend arm fully!"; feedbackType = "info"; currentFormColor = "#FFB800";
+    cueTitle = "ROM Check"; feedback = "Extend arm fully!"; feedbackType = "info"; currentFormColor = "#F59E0B";
   }
 }
 
@@ -199,20 +199,20 @@ function analyzeShoulderForm(landmarks) {
 
   // Uneven pressing check
   if (Math.abs(leftAngle - rightAngle) > 25) {
-    cueTitle = "Imbalance"; feedback = "Press evenly!"; feedbackType = "bad"; currentFormColor = "#FF3366";
+    cueTitle = "Imbalance"; feedback = "Press evenly!"; feedbackType = "bad"; currentFormColor = "#EF4444";
   } else {
     // Shoulder Press State Machine
     if (elbowAngle < SHOULDER_DOWN) {
       // Bottom of the press
       if (stage === Stage.UP) {
         if (now - repStartTime > MIN_REP_TIME_MS) {
-          repCount++; cueTitle = "Correct Form"; feedback = "Great Press!"; feedbackType = "good"; currentFormColor = "#00FF66";
+          repCount++; cueTitle = "Correct Form"; feedback = "Great Press!"; feedbackType = "good"; currentFormColor = "#10B981";
         } else {
-          badRepCount++; cueTitle = "Control Drop"; feedback = "Don't drop the weight abruptly"; feedbackType = "bad"; currentFormColor = "#FF3366";
+          badRepCount++; cueTitle = "Control Drop"; feedback = "Don't drop the weight abruptly"; feedbackType = "bad"; currentFormColor = "#EF4444";
         }
         stage = Stage.DOWN;
       } else {
-        currentFormColor = "#E2FF00";
+        currentFormColor = "#2563EB";
         if (!feedback.includes("Great") && !feedback.includes("drop")) {
           cueTitle = "Ready"; feedback = "Press overhead!"; feedbackType = "info";
         }
@@ -221,11 +221,11 @@ function analyzeShoulderForm(landmarks) {
       // Top of press
       if (stage === Stage.DOWN) {
         stage = Stage.UP; repStartTime = now;
-        cueTitle = "Lockout"; feedback = "Hold at the top!"; feedbackType = "good"; currentFormColor = "#00FF66";
+        cueTitle = "Lockout"; feedback = "Hold at the top!"; feedbackType = "good"; currentFormColor = "#10B981";
       }
     } else {
       // Mid Rep
-      currentFormColor = "#E2FF00";
+      currentFormColor = "#2563EB";
       if (stage === Stage.UP) { cueTitle = "Lowering"; feedback = "Control descent..."; feedbackType = "info"; }
       else if (stage === Stage.DOWN) { cueTitle = "Pressing"; feedback = "Push up!"; feedbackType = "info"; }
     }
@@ -306,7 +306,7 @@ function updateDashboardUI() {
   } else {
     cueIcon.innerHTML = ICON_INFO;
     cueIcon.className = "cue-icon";
-    cueIcon.style.background = "rgba(226, 255, 0, 0.15)";
+    cueIcon.style.background = "rgba(37, 99, 235, 0.15)";
     cueIcon.style.color = "var(--accent-main)";
   }
 }
