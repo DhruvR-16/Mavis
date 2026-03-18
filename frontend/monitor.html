@@ -10,11 +10,14 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
 <body>
-    <div class="container">
+    <div class="container monitor-container">
         <!-- Header -->
         <header class="monitor-header">
             <h1 id="exercise-title">Analysis</h1>
-            <a href="index.html" class="btn-secondary">Back to Menu</a>
+            <div class="header-actions">
+                <button id="camera-toggle-btn" class="btn-secondary">Turn Off Camera</button>
+                <a href="index.html" class="btn-secondary">Back to Menu</a>
+            </div>
         </header>
 
         <!-- Video Player -->

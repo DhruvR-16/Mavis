@@ -40,6 +40,11 @@ const canvasEl = document.getElementById("pose-canvas");
 const ctx = canvasEl.getContext("2d");
 const overlayEl = document.getElementById("timeout-overlay");
 const resumeBtn = document.getElementById("resume-btn");
+const cameraToggleBtn = document.getElementById("camera-toggle-btn");
+if (cameraToggleBtn) {
+  cameraToggleBtn.addEventListener("click", toggleCamera);
+}
+
 const titleEl = document.getElementById("exercise-title");
 const loadingEl = document.getElementById("loading-overlay");
 
@@ -448,6 +453,8 @@ function syncCanvasSize() {
   }
 }
 
+let pose = null;
+
 // ─── Initialize ─────────────────────────────────────────────
 async function init() {
   // Set Title based on URL param
@@ -463,54 +470,88 @@ async function init() {
   }
 
   // Initialize MediaPipe Pose
-  const pose = initPose();
+  pose = initPose();
 
   // Start Camera
+  await startCameraFlow();
+
+  // Setup Inactivity Listeners
+  setupActivityListeners();
+  resetTimer();
+}
+
+let captureLoopRunning = false;
+let lastVideoTime = -1;
+
+async function captureFrame() {
+  if (!isActive) {
+    captureLoopRunning = false;
+    return;
+  }
+  
+  if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+    if (videoEl.currentTime !== lastVideoTime) {
+      lastVideoTime = videoEl.currentTime;
+      syncCanvasSize();
+      if (pose) await pose.send({ image: videoEl });
+      
+      // Hide loading overlay once the first frame is processed
+      if (!poseReady) {
+        poseReady = true;
+        if (loadingEl) loadingEl.style.display = "none";
+        console.log("MediaPipe Pose initialized.");
+      }
+    }
+  }
+  requestAnimationFrame(captureFrame);
+}
+
+async function startCameraFlow() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { width: 1280, height: 720, facingMode: "user" },
     });
     videoEl.srcObject = stream;
     isActive = true;
+    if (cameraToggleBtn) cameraToggleBtn.textContent = "Turn Off Camera";
 
     videoEl.addEventListener("loadedmetadata", () => {
       videoEl.play();
       syncCanvasSize();
 
-      // Manual Frame Capture Loop (Resolves @mediapipe/camera_utils WebGL jitter bugs on Mac)
-      let lastVideoTime = -1;
-      async function captureFrame() {
-        if (!isActive) return;
-        
-        if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
-          if (videoEl.currentTime !== lastVideoTime) {
-            lastVideoTime = videoEl.currentTime;
-            syncCanvasSize();
-            await pose.send({ image: videoEl });
-            
-            // Hide loading overlay once the first frame is processed
-            if (!poseReady) {
-              poseReady = true;
-              if (loadingEl) loadingEl.style.display = "none";
-              console.log("MediaPipe Pose initialized.");
-            }
-          }
-        }
+      if (!captureLoopRunning) {
+        captureLoopRunning = true;
         requestAnimationFrame(captureFrame);
       }
-      
-      // Start the loop
-      requestAnimationFrame(captureFrame);
     });
   } catch (err) {
     console.error("Camera access denied:", err);
     if (loadingEl) loadingEl.style.display = "none";
     document.getElementById("error-msg").style.display = "flex";
   }
+}
 
-  // Setup Inactivity Listeners
-  setupActivityListeners();
-  resetTimer();
+function toggleCamera() {
+  if (isActive) {
+    // Turn off
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      videoEl.srcObject = null;
+      stream = null;
+    }
+    isActive = false;
+    if (cameraToggleBtn) cameraToggleBtn.textContent = "Turn On Camera";
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    feedback = "Camera Off";
+    feedbackType = "neutral";
+    updateStats();
+  } else {
+    // Turn on
+    if (cameraToggleBtn) cameraToggleBtn.textContent = "Starting...";
+    startCameraFlow();
+  }
 }
 
 // ─── Inactivity Logic ───────────────────────────────────────
@@ -522,8 +563,10 @@ function setupActivityListeners() {
 
   resumeBtn.addEventListener("click", () => {
     overlayEl.style.display = "none";
-    // Restart camera + pose
-    init();
+    if (!isActive) {
+      startCameraFlow();
+    }
+    resetTimer();
   });
 }
 
