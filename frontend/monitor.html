@@ -3,75 +3,147 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mavis - Monitor</title>
+    <title>Mavis Live - Monitor</title>
     <link rel="stylesheet" href="style.css">
     <!-- MediaPipe Dependencies -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
 <body>
-    <div class="container monitor-container">
-        <!-- Header -->
-        <header class="monitor-header">
-            <h1 id="exercise-title">Analysis</h1>
-            <div class="header-actions">
-                <button id="camera-toggle-btn" class="btn-secondary">Turn Off Camera</button>
-                <a href="index.html" class="btn-secondary">Back to Menu</a>
+    <div class="app-container">
+        <!-- Top Navbar -->
+        <nav class="navbar">
+            <div class="brand">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6.5 6.5l11 11"/>
+                    <path d="M21 21l-1-1"/>
+                    <path d="M3 3l1 1"/>
+                    <path d="M18 22l4-4"/>
+                    <path d="M2 6l4-4"/>
+                    <path d="M3 10l7-7"/>
+                    <path d="M14 21l7-7"/>
+                </svg>
+                Mavis <span>Live</span>
             </div>
-        </header>
+            <div class="nav-links">
+                <a href="index.html">Dashboard</a>
+                <a href="#" class="active">Live Workout</a>
+                <a href="#">History</a>
+            </div>
+        </nav>
 
-        <!-- Video Player -->
-        <div class="viewer">
-            <!-- Main Feed -->
-            <video id="webcam" autoplay playsinline muted></video>
-            <!-- Canvas Overlay for Skeleton Drawing -->
-            <canvas id="pose-canvas"></canvas>
+        <!-- Main Dashboard -->
+        <main class="dashboard">
+            
+            <!-- Video Panel (Left) -->
+            <div class="video-panel">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="pose-canvas"></canvas>
 
-            <!-- Inactivity Overlay -->
-            <div id="timeout-overlay" class="overlay-msg">
-                <h3>Session Paused</h3>
-                <p>Camera turned off due to inactivity.</p>
-                <br>
-                <button id="resume-btn" class="btn-primary">Resume Session</button>
+                <!-- Top Left Overlays -->
+                <div class="overlay-top-left">
+                    <div class="tag">
+                        <div class="dot-red" id="rec-dot"></div>
+                        REC: <span id="rec-time">00:00:00</span>
+                    </div>
+                    <div class="tag">
+                        <div class="dot-blue"></div>
+                        <span id="exercise-title-tag">ANALYSIS ACTIVE</span>
+                    </div>
+                </div>
+
+                <!-- Bottom Left Stats Overlay -->
+                <div class="overlay-bottom-left">
+                    <div class="stat-metric">
+                        <span class="label">Reps</span>
+                        <span class="value" id="reps-count">0</span>
+                    </div>
+                    <div class="stat-metric">
+                        <span class="label">Bad Reps</span>
+                        <span class="value" id="bad-reps-count" style="color: var(--error);">0</span>
+                    </div>
+                    <div class="stat-metric">
+                        <span class="label">Duration</span>
+                        <span class="value" id="duration-val">00s</span>
+                    </div>
+                </div>
+
+                <!-- Bottom Right Controls -->
+                <div class="overlay-bottom-right">
+                    <button id="camera-toggle-btn" class="btn-circle btn-blue" title="Pause/Resume">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="4" width="4" height="16"/>
+                            <rect x="14" y="4" width="4" height="16"/>
+                        </svg>
+                    </button>
+                    <a href="index.html" class="btn-circle btn-red" title="Stop">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12"/>
+                        </svg>
+                    </a>
+                </div>
+
+                <!-- Status Overlays -->
+                <div id="loading-overlay" class="overlay-msg" style="display: flex;">
+                    <h3>Initializing Engine...</h3>
+                    <p>Warming up MediaPipe Pose models.</p>
+                    <div class="spinner"></div>
+                </div>
+                <div id="timeout-overlay" class="overlay-msg">
+                    <h3>Session Paused</h3>
+                    <p>Camera turned off due to inactivity.</p>
+                    <button id="resume-btn" class="btn-primary">Resume Session</button>
+                </div>
+                <div id="error-msg" class="overlay-msg" style="background: rgba(239, 68, 68, 0.95);">
+                    <h3>Camera Error</h3>
+                    <p>Please allow camera access to continue.</p>
+                </div>
             </div>
 
-            <!-- Permission Error -->
-            <div id="error-msg" class="overlay-msg" style="background: var(--error);">
-                <h3>Camera Error</h3>
-                <p>Please allow camera access to continue.</p>
-            </div>
+            <!-- Sidebar (Right) -->
+            <aside class="sidebar">
+                
+                <div class="section-title">Live Feedback</div>
+                <div class="feedback-box status-info" id="master-feedback-box">
+                    <div class="feedback-text" id="master-feedback-text">READY</div>
+                    <div class="feedback-stars" id="master-feedback-stars">
+                        ★ ★ ★ ★ ★
+                    </div>
+                </div>
 
-            <!-- Loading Overlay -->
-            <div id="loading-overlay" class="overlay-msg" style="display: flex;">
-                <h3>Loading AI Model...</h3>
-                <p>Please wait while MediaPipe initializes.</p>
-                <div class="spinner"></div>
-            </div>
-        </div>
+                <div class="section-title" style="margin-top: 1rem;">Real-Time Cues</div>
+                <div id="cues-container">
+                    <div class="cue-card" id="primary-cue-card">
+                        <div class="cue-icon info" id="cue-icon">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <div class="cue-content">
+                            <h4 id="cue-title">Positioning</h4>
+                            <p id="cue-desc">Step into the frame to begin.</p>
+                        </div>
+                    </div>
+                </div>
 
-        <!-- Live Stats -->
-        <div class="stats-panel">
-            <div class="stat-item">
-                <div class="stat-label">Stage</div>
-                <div class="stat-value" id="stage-text">—</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Reps</div>
-                <div class="stat-value" id="reps-count" style="color: var(--success);">0</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Bad Reps</div>
-                <div class="stat-value" id="bad-reps-count" style="color: var(--error);">0</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Elbow Angle</div>
-                <div class="stat-value" id="angle-text">—°</div>
-            </div>
-            <div class="stat-item stat-feedback">
-                <div class="stat-label">Feedback</div>
-                <div class="stat-value" id="feedback-text">Ready</div>
-            </div>
-        </div>
+                <div class="section-title" style="margin-top: 1rem;">Current Biometrics</div>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="icon">📐</div>
+                        <div class="value" id="angle-text">—°</div>
+                        <div class="label">Elbow Angle</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="icon">⏱️</div>
+                        <div class="value" id="stage-text">—</div>
+                        <div class="label">Phase</div>
+                    </div>
+                </div>
+
+                <button class="btn-block" id="finish-btn" onclick="window.location.href='index.html'">Finish Workout Session</button>
+
+            </aside>
+        </main>
     </div>
 
     <script src="app.js"></script>
