@@ -1,38 +1,42 @@
-// Mavis Frontend Logic — Bicep Curl Analyzer
+// Mavis Frontend Logic — Bicep Curl & Shoulder Press Analyzer
 // Uses MediaPipe Pose for real-time form detection
 
 // ─── Configuration ───────────────────────────────────────────
 const INACTIVITY_LIMIT_MS = 60000;
 
-// Thresholds
-const UP_THRESHOLD = 50;
-const DOWN_THRESHOLD = 155;
+// Bicep Thresholds
+const BICEP_UP = 50;
+const BICEP_DOWN = 155;
+const BICEP_DRIFT = 0.08;
+
+// Shoulder Press Thresholds
+const SHOULDER_UP = 150; // Nearly straight elbow
+const SHOULDER_DOWN = 80; // Elbow below 90 deg
+
 const MIN_REP_TIME_MS = 800;
-const ELBOW_DRIFT_TOLERANCE = 0.08;
 
 // ─── State ───────────────────────────────────────────────────
 let inactivityTimer;
 let stream = null;
 let isActive = true;
 let poseReady = false;
+let currentWorkoutType = "bicep"; // Default
 
-// Bicep Curl State
+// Form State
 const Stage = { DOWN: "DOWN", UP: "UP" };
 let stage = Stage.DOWN;
 let repCount = 0;
 let badRepCount = 0;
-let feedback = "Start Curls";
+let feedback = "Start Workout";
 let cueTitle = "Positioning";
 let feedbackType = "info"; // "good", "bad", "info", "neutral"
-let elbowAngle = 0;
 let repStartTime = 0;
-let anchorElbowX = 0;
-let currentFormColor = "#1D4ED8"; // Accent blue by default
 
-// Active side detection
+// Workout Specific Vars
+let elbowAngle = 0; // Displayed angle
+let anchorElbowX = 0;
+let currentFormColor = "#E2FF00"; // Volt Yellow by default
 let activeSide = "left";
-let lastLeftAngle = 180;
-let lastRightAngle = 180;
 
 // Recording Timer
 let sessionStartTime = null;
@@ -92,7 +96,7 @@ function startTimer() {
   }, 500);
 }
 
-// ─── Angle Calculation ──────────────────────────────────────
+// ─── Math Helpers ───────────────────────────────────────────
 function calculateAngle(a, b, c) {
   const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
   let angle = Math.abs((radians * 180.0) / Math.PI);
@@ -104,86 +108,127 @@ const LM = { LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12, LEFT_ELBOW: 13, RIGHT_ELBOW:
 function lm(landmarks, idx) { return landmarks[idx]; }
 function isLandmarkVisible(l, threshold = 0.5) { return l && l.visibility > threshold; }
 
-function detectActiveSide(landmarks) {
-  const lShoulder = lm(landmarks, LM.LEFT_SHOULDER); const lElbow = lm(landmarks, LM.LEFT_ELBOW); const lWrist = lm(landmarks, LM.LEFT_WRIST);
-  const rShoulder = lm(landmarks, LM.RIGHT_SHOULDER); const rElbow = lm(landmarks, LM.RIGHT_ELBOW); const rWrist = lm(landmarks, LM.RIGHT_WRIST);
-  const leftVisible = isLandmarkVisible(lShoulder) && isLandmarkVisible(lElbow) && isLandmarkVisible(lWrist);
-  const rightVisible = isLandmarkVisible(rShoulder) && isLandmarkVisible(rElbow) && isLandmarkVisible(rWrist);
+// ─── BICEP CURL LOGIC ───────────────────────────────────────
+function detectActiveArm(landmarks) {
+  const lS = lm(landmarks, LM.LEFT_SHOULDER); const lE = lm(landmarks, LM.LEFT_ELBOW); const lW = lm(landmarks, LM.LEFT_WRIST);
+  const rS = lm(landmarks, LM.RIGHT_SHOULDER); const rE = lm(landmarks, LM.RIGHT_ELBOW); const rW = lm(landmarks, LM.RIGHT_WRIST);
+  const leftVis = isLandmarkVisible(lS) && isLandmarkVisible(lE) && isLandmarkVisible(lW);
+  const rightVis = isLandmarkVisible(rS) && isLandmarkVisible(rE) && isLandmarkVisible(rW);
 
-  if (leftVisible && rightVisible) {
-    const leftAngle = calculateAngle(lShoulder, lElbow, lWrist);
-    const rightAngle = calculateAngle(rShoulder, rElbow, rWrist);
-    activeSide = leftAngle < rightAngle ? "left" : "right";
-  } else if (leftVisible) activeSide = "left";
-  else if (rightVisible) activeSide = "right";
+  if (leftVis && rightVis) {
+    const lA = calculateAngle(lS, lE, lW);
+    const rA = calculateAngle(rS, rE, rW);
+    // Arm with tighter angle is curling
+    activeSide = (lA < rA) ? "left" : "right";
+  } else if (leftVis) activeSide = "left";
+  else if (rightVis) activeSide = "right";
   return activeSide;
 }
 
-function getActiveKeypoints(landmarks) {
-  const side = detectActiveSide(landmarks);
-  if (side === "left") {
-    return { shoulder: lm(landmarks, LM.LEFT_SHOULDER), elbow: lm(landmarks, LM.LEFT_ELBOW), wrist: lm(landmarks, LM.LEFT_WRIST), hip: lm(landmarks, LM.LEFT_HIP) };
-  } else {
-    return { shoulder: lm(landmarks, LM.RIGHT_SHOULDER), elbow: lm(landmarks, LM.RIGHT_ELBOW), wrist: lm(landmarks, LM.RIGHT_WRIST), hip: lm(landmarks, LM.RIGHT_HIP) };
-  }
-}
-
-// ─── Form Analysis ──────────────────────────────────────────
-function analyzeForm(landmarks) {
-  const kp = getActiveKeypoints(landmarks);
-  const { shoulder, elbow, wrist, hip } = kp;
+function analyzeBicepForm(landmarks) {
+  const side = detectActiveArm(landmarks);
+  const shoulder = side === "left" ? lm(landmarks, LM.LEFT_SHOULDER) : lm(landmarks, LM.RIGHT_SHOULDER);
+  const elbow = side === "left" ? lm(landmarks, LM.LEFT_ELBOW) : lm(landmarks, LM.RIGHT_ELBOW);
+  const wrist = side === "left" ? lm(landmarks, LM.LEFT_WRIST) : lm(landmarks, LM.RIGHT_WRIST);
+  const hip = side === "left" ? lm(landmarks, LM.LEFT_HIP) : lm(landmarks, LM.RIGHT_HIP);
 
   if (!isLandmarkVisible(shoulder) || !isLandmarkVisible(elbow) || !isLandmarkVisible(wrist) || !isLandmarkVisible(hip)) {
-    cueTitle = "Positioning"; feedback = "Position yourself in frame"; feedbackType = "neutral";
-    return;
+    cueTitle = "Positioning"; feedback = "Step into frame"; feedbackType = "neutral"; currentFormColor = "#94A3B8"; return;
   }
 
   elbowAngle = calculateAngle(shoulder, elbow, wrist);
   const shoulderAngle = calculateAngle(elbow, shoulder, hip);
   const now = Date.now();
 
-  // ── State Machine ──
-  if (elbowAngle > DOWN_THRESHOLD) {
-    if (stage === Stage.UP) {
-      const duration = now - repStartTime;
-      if (duration > MIN_REP_TIME_MS) {
-        repCount++; cueTitle = "Correct Form"; feedback = "Excellent Rep!"; feedbackType = "good"; currentFormColor = "#10B981"; // success
+  // Bicep State Machine
+  if (elbowAngle > BICEP_DOWN) {
+    if (stage === Stage.UP) { // Completing Rep
+      if (now - repStartTime > MIN_REP_TIME_MS) {
+        repCount++; cueTitle = "Correct Form"; feedback = "Excellent Rep!"; feedbackType = "good"; currentFormColor = "#00FF66";
       } else {
-        badRepCount++; cueTitle = "Tempo Control"; feedback = "Too Fast! Slow down"; feedbackType = "bad"; currentFormColor = "#EF4444"; // error
+        badRepCount++; cueTitle = "Tempo Control"; feedback = "Too Fast! Slow down"; feedbackType = "bad"; currentFormColor = "#FF3366";
       }
       stage = Stage.DOWN;
     } else {
-      currentFormColor = "#1D4ED8"; // ready
-      if (feedback === "Start Curls" || feedback === "Excellent Rep!" || feedback === "Too Fast! Slow down") {
-        cueTitle = "Ready"; feedback = "Curl upwards!"; feedbackType = "info";
-      }
+      currentFormColor = "#E2FF00";
+      if (!feedback.includes("Fast") && !feedback.includes("Excellent")) { cueTitle = "Ready"; feedback = "Curl upwards!"; feedbackType = "info"; }
       anchorElbowX = elbow.x;
     }
-  } else if (elbowAngle < UP_THRESHOLD) {
-    if (stage === Stage.DOWN) {
+  } else if (elbowAngle < BICEP_UP) {
+    if (stage === Stage.DOWN) { // Contracting
       stage = Stage.UP; repStartTime = now; anchorElbowX = elbow.x;
-      cueTitle = "Contraction"; feedback = "Squeeze the bicep!"; feedbackType = "good"; currentFormColor = "#10B981";
+      cueTitle = "Contraction"; feedback = "Squeeze the bicep!"; feedbackType = "good"; currentFormColor = "#00FF66";
     }
-    const drift = Math.abs(elbow.x - anchorElbowX);
-    if (drift > ELBOW_DRIFT_TOLERANCE) {
-      cueTitle = "Shoulder Position"; feedback = "Fix Elbow! Keep it pinned."; feedbackType = "bad"; currentFormColor = "#EF4444";
+    // Drift check
+    if (Math.abs(elbow.x - anchorElbowX) > BICEP_DRIFT) {
+      cueTitle = "Form Warning"; feedback = "Fix Elbow! Keep it pinned."; feedbackType = "bad"; currentFormColor = "#FF3366";
     }
   } else {
+    // Middle Phase
+    currentFormColor = "#E2FF00";
     if (stage === Stage.UP) {
-      if (shoulderAngle > 45) {
-        cueTitle = "Torso Swing"; feedback = "Don't swing back!"; feedbackType = "bad"; currentFormColor = "#EF4444";
-      } else {
-        cueTitle = "Eccentric Phase"; feedback = "Lower slowly..."; feedbackType = "info"; currentFormColor = "#1D4ED8";
-      }
+      if (shoulderAngle > 45) { cueTitle = "Torso Swing"; feedback = "Don't swing back!"; feedbackType = "bad"; currentFormColor = "#FF3366"; }
+      else { cueTitle = "Eccentric"; feedback = "Lower slowly..."; feedbackType = "info"; }
     } else if (stage === Stage.DOWN) {
-      if (elbowAngle < DOWN_THRESHOLD - 10) {
-        cueTitle = "Concentric Phase"; feedback = "Keep going up!"; feedbackType = "info"; currentFormColor = "#1D4ED8";
-      }
+      cueTitle = "Concentric"; feedback = "Keep going up!"; feedbackType = "info";
     }
   }
 
-  if (stage === Stage.DOWN && elbowAngle < DOWN_THRESHOLD && elbowAngle > UP_THRESHOLD && elbowAngle < 120) {
-    cueTitle = "Range of Motion"; feedback = "Extend arm fully!"; feedbackType = "info";
+  if (stage === Stage.DOWN && elbowAngle < BICEP_DOWN && elbowAngle > BICEP_UP && elbowAngle < 120) {
+    cueTitle = "ROM Check"; feedback = "Extend arm fully!"; feedbackType = "info"; currentFormColor = "#FFB800";
+  }
+}
+
+// ─── SHOULDER PRESS LOGIC ───────────────────────────────────
+function analyzeShoulderForm(landmarks) {
+  const lS = lm(landmarks, LM.LEFT_SHOULDER); const lE = lm(landmarks, LM.LEFT_ELBOW); const lW = lm(landmarks, LM.LEFT_WRIST);
+  const rS = lm(landmarks, LM.RIGHT_SHOULDER); const rE = lm(landmarks, LM.RIGHT_ELBOW); const rW = lm(landmarks, LM.RIGHT_WRIST);
+
+  const leftVis = isLandmarkVisible(lS) && isLandmarkVisible(lE) && isLandmarkVisible(lW);
+  const rightVis = isLandmarkVisible(rS) && isLandmarkVisible(rE) && isLandmarkVisible(rW);
+
+  if (!leftVis || !rightVis) {
+    cueTitle = "Positioning"; feedback = "Both arms must be visible"; feedbackType = "neutral"; currentFormColor = "#94A3B8"; return;
+  }
+
+  const leftAngle = calculateAngle(lS, lE, lW);
+  const rightAngle = calculateAngle(rS, rE, rW);
+  elbowAngle = (leftAngle + rightAngle) / 2; // Average for UI display
+
+  const now = Date.now();
+
+  // Uneven pressing check
+  if (Math.abs(leftAngle - rightAngle) > 25) {
+    cueTitle = "Imbalance"; feedback = "Press evenly!"; feedbackType = "bad"; currentFormColor = "#FF3366";
+  } else {
+    // Shoulder Press State Machine
+    if (elbowAngle < SHOULDER_DOWN) {
+      // Bottom of the press
+      if (stage === Stage.UP) {
+        if (now - repStartTime > MIN_REP_TIME_MS) {
+          repCount++; cueTitle = "Correct Form"; feedback = "Great Press!"; feedbackType = "good"; currentFormColor = "#00FF66";
+        } else {
+          badRepCount++; cueTitle = "Control Drop"; feedback = "Don't drop the weight abruptly"; feedbackType = "bad"; currentFormColor = "#FF3366";
+        }
+        stage = Stage.DOWN;
+      } else {
+        currentFormColor = "#E2FF00";
+        if (!feedback.includes("Great") && !feedback.includes("drop")) {
+          cueTitle = "Ready"; feedback = "Press overhead!"; feedbackType = "info";
+        }
+      }
+    } else if (elbowAngle > SHOULDER_UP) {
+      // Top of press
+      if (stage === Stage.DOWN) {
+        stage = Stage.UP; repStartTime = now;
+        cueTitle = "Lockout"; feedback = "Hold at the top!"; feedbackType = "good"; currentFormColor = "#00FF66";
+      }
+    } else {
+      // Mid Rep
+      currentFormColor = "#E2FF00";
+      if (stage === Stage.UP) { cueTitle = "Lowering"; feedback = "Control descent..."; feedbackType = "info"; }
+      else if (stage === Stage.DOWN) { cueTitle = "Pressing"; feedback = "Push up!"; feedbackType = "info"; }
+    }
   }
 }
 
@@ -193,55 +238,64 @@ const POSE_CONNECTIONS_BODY = [
 ];
 
 function drawSkeleton(landmarks, width, height) {
-  const activeIndices = activeSide === "left" ? [LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST] : [LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST];
+  // Bicep highlights one arm, Shoulder highlights both
+  const activeIndices = [];
+  if (currentWorkoutType === "bicep") {
+    if (activeSide === "left") activeIndices.push(LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST);
+    else activeIndices.push(LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
+  } else {
+    // Both arms for shoulder press
+    activeIndices.push(LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST, LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
+  }
+
   for (const [i, j] of POSE_CONNECTIONS_BODY) {
     const a = landmarks[i]; const b = landmarks[j];
-    if (!a || !b || a.visibility < 0.4 || b.visibility < 0.4) continue;
-    const isActiveArm = (activeIndices.includes(i) || activeIndices.includes(j));
+    if (!a || !b || a.visibility < 0.3 || b.visibility < 0.3) continue;
+    
+    const isActiveArm = activeIndices.includes(i) || activeIndices.includes(j);
     ctx.beginPath();
     ctx.moveTo(a.x * width, a.y * height); ctx.lineTo(b.x * width, b.y * height);
-    ctx.strokeStyle = isActiveArm ? currentFormColor : "rgba(255,255,255,0.15)";
-    ctx.lineWidth = isActiveArm ? 5 : 2;
+    // Huge visibility fix requested by user: full body drawn cleanly
+    ctx.strokeStyle = isActiveArm ? currentFormColor : "rgba(255,255,255,0.7)";
+    ctx.lineWidth = isActiveArm ? 6 : 3;
     ctx.stroke();
   }
+  
   for (let i = 0; i <= 28; i++) {
     const l = landmarks[i];
-    if (!l || l.visibility < 0.4) continue;
+    if (!l || l.visibility < 0.3) continue;
     const isActive = activeIndices.includes(i);
     ctx.beginPath();
     ctx.arc(l.x * width, l.y * height, isActive ? 8 : 4, 0, 2 * Math.PI);
-    ctx.fillStyle = isActive ? currentFormColor : "rgba(255,255,255,0.3)";
+    ctx.fillStyle = isActive ? currentFormColor : "rgba(255,255,255,0.9)";
     ctx.fill();
   }
 }
 
 // ─── Update UI Dashboard ────────────────────────────────────
-// SVG Icons
-const ICON_CHECK = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
-const ICON_WARN = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
-const ICON_INFO = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+const ICON_CHECK = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+const ICON_WARN = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
+const ICON_INFO = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
 
 function updateDashboardUI() {
-  // Video Overlays
   repsCount.textContent = repCount;
   badRepsCount.textContent = badRepCount;
-  
-  // Sidebar Metrics
   angleText.textContent = `${Math.round(elbowAngle)}°`;
   stageText.textContent = stage;
 
-  // Master Feedback Box
+  // Formatting strings slightly to look cleaner
   let masterStatusText = "READY";
-  if (feedbackType === "good") masterStatusText = "GOOD REP";
+  if (feedbackType === "good") masterStatusText = "GOOD FORM";
   else if (feedbackType === "bad") masterStatusText = "BAD FORM";
-  else if (stage === Stage.UP) masterStatusText = "SQUEEZE";
+  else if (stage === Stage.UP) masterStatusText = "HOLD";
   
   masterText.textContent = masterStatusText;
   masterBox.className = `feedback-box status-${feedbackType}`;
 
-  // Cues Card
+  // Styling text for high contrast based on theme
   cueTitleEl.textContent = cueTitle;
   cueDescEl.textContent = feedback;
+  cueDescEl.style.color = "#E2E8F0"; // Slate-200 for extremely readable contrast
   
   if (feedbackType === "good") {
     cueIcon.innerHTML = ICON_CHECK;
@@ -251,10 +305,9 @@ function updateDashboardUI() {
     cueIcon.className = "cue-icon error";
   } else {
     cueIcon.innerHTML = ICON_INFO;
-    // Blue info 
     cueIcon.className = "cue-icon";
-    cueIcon.style.background = "rgba(37, 99, 235, 0.1)";
-    cueIcon.style.color = "var(--accent-blue)";
+    cueIcon.style.background = "rgba(226, 255, 0, 0.15)";
+    cueIcon.style.color = "var(--accent-main)";
   }
 }
 
@@ -263,7 +316,8 @@ let pose = null;
 async function init() {
   const params = new URLSearchParams(window.location.search);
   const type = params.get("type");
-  titleTagEl.textContent = (type === "shoulder") ? "SHOULDER PRESS ACTIVE" : "BICEP ANALYSIS ACTIVE";
+  currentWorkoutType = (type === "shoulder") ? "shoulder" : "bicep";
+  titleTagEl.textContent = (currentWorkoutType === "shoulder") ? "SHOULDER PRESS ACTIVE" : "BICEP ANALYSIS ACTIVE";
 
   pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
   pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
@@ -280,7 +334,11 @@ function onPoseResults(results) {
   ctx.clearRect(0, 0, width, height);
 
   if (results.poseLandmarks) {
-    analyzeForm(results.poseLandmarks);
+    if (currentWorkoutType === "shoulder") {
+      analyzeShoulderForm(results.poseLandmarks);
+    } else {
+      analyzeBicepForm(results.poseLandmarks);
+    }
     drawSkeleton(results.poseLandmarks, width, height);
     updateDashboardUI();
     if (isActive) resetTimer();
@@ -332,7 +390,6 @@ function toggleCamera() {
   if (isActive) {
     if (stream) { stream.getTracks().forEach((track) => track.stop()); videoEl.srcObject = null; stream = null; }
     isActive = false;
-    // Play button SVG
     if (cameraToggleBtn) cameraToggleBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
     
