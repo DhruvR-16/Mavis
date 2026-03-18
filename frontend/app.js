@@ -474,23 +474,33 @@ async function init() {
     isActive = true;
 
     videoEl.addEventListener("loadedmetadata", () => {
+      videoEl.play();
       syncCanvasSize();
 
-      // Connect to MediaPipe camera
-      const camera = new Camera(videoEl, {
-        onFrame: async () => {
-          syncCanvasSize();
-          await pose.send({ image: videoEl });
-        },
-        width: 1280,
-        height: 720,
-      });
-      camera.start().then(() => {
-        // Hide loading overlay
-        if (loadingEl) loadingEl.style.display = "none";
-        poseReady = true;
-        console.log("MediaPipe Pose initialized.");
-      });
+      // Manual Frame Capture Loop (Resolves @mediapipe/camera_utils WebGL jitter bugs on Mac)
+      let lastVideoTime = -1;
+      async function captureFrame() {
+        if (!isActive) return;
+        
+        if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+          if (videoEl.currentTime !== lastVideoTime) {
+            lastVideoTime = videoEl.currentTime;
+            syncCanvasSize();
+            await pose.send({ image: videoEl });
+            
+            // Hide loading overlay once the first frame is processed
+            if (!poseReady) {
+              poseReady = true;
+              if (loadingEl) loadingEl.style.display = "none";
+              console.log("MediaPipe Pose initialized.");
+            }
+          }
+        }
+        requestAnimationFrame(captureFrame);
+      }
+      
+      // Start the loop
+      requestAnimationFrame(captureFrame);
     });
   } catch (err) {
     console.error("Camera access denied:", err);
