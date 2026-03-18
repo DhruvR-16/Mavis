@@ -226,7 +226,6 @@ class BicepAnalyzer:
                         # 3. Logic Switch
                         if self.current_action == "Bicep Curl" or self.lstm_model is None:
                             self.analyze_form(features, landmarks)
-                            self.form_color = (0, 255, 0)
                         else:
                             self.feedback = "Wrong Exercise"
                             self.form_color = (0, 0, 255)
@@ -257,10 +256,6 @@ class BicepAnalyzer:
                         # Debug: AI Confidence below Exercise Name
                         cv2.putText(image, f"AI Conf: {self.confidence:.2f}", (10, 60), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-                    except Exception as e:
-                        # print(e)
-                        pass
 
                     except Exception as e:
                         # print(e)

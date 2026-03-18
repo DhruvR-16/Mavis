@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mavis - Monitor</title>
     <link rel="stylesheet" href="style.css">
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
 <body>
     <div class="container">
@@ -18,7 +22,9 @@
         <div class="viewer">
             <!-- Main Feed -->
             <video id="webcam" autoplay playsinline muted></video>
-            
+            <!-- Canvas Overlay for Skeleton Drawing -->
+            <canvas id="pose-canvas"></canvas>
+
             <!-- Inactivity Overlay -->
             <div id="timeout-overlay" class="overlay-msg">
                 <h3>Session Paused</h3>
@@ -26,31 +32,44 @@
                 <br>
                 <button id="resume-btn" class="btn-primary">Resume Session</button>
             </div>
-            
+
             <!-- Permission Error -->
             <div id="error-msg" class="overlay-msg" style="background: var(--error);">
                 <h3>Camera Error</h3>
                 <p>Please allow camera access to continue.</p>
             </div>
+
+            <!-- Loading Overlay -->
+            <div id="loading-overlay" class="overlay-msg" style="display: flex;">
+                <h3>Loading AI Model...</h3>
+                <p>Please wait while MediaPipe initializes.</p>
+                <div class="spinner"></div>
+            </div>
         </div>
 
-        <!-- Live Stats (Placeholder for Frontend Demo) -->
+        <!-- Live Stats -->
         <div class="stats-panel">
             <div class="stat-item">
-                <div class="stat-label">Status</div>
-                <div class="stat-value" style="color: var(--accent);">Active</div>
+                <div class="stat-label">Stage</div>
+                <div class="stat-value" id="stage-text">—</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Reps</div>
-                <div class="stat-value">0</div>
+                <div class="stat-value" id="reps-count" style="color: var(--success);">0</div>
             </div>
             <div class="stat-item">
+                <div class="stat-label">Bad Reps</div>
+                <div class="stat-value" id="bad-reps-count" style="color: var(--error);">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Elbow Angle</div>
+                <div class="stat-value" id="angle-text">—°</div>
+            </div>
+            <div class="stat-item stat-feedback">
                 <div class="stat-label">Feedback</div>
-                <div class="stat-value" id="feedback-text" style="font-size: 1rem; padding-top: 5px;">Ready</div>
+                <div class="stat-value" id="feedback-text">Ready</div>
             </div>
         </div>
-        </div>
-
     </div>
 
     <script src="app.js"></script>
