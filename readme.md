@@ -9,25 +9,27 @@
 
 ## 📖 Overview
 
-**Mavis** is an intelligent fitness assistant that provides **gym-grade coaching** on standard devices. It goes beyond simple rep counting by using **LSTM networks** to recognize actions and a **Strict Coach State Machine** to enforce perfect form.
+**Mavis** is an intelligent fitness assistant that provides **gym-grade coaching** right from any standard webcam device. It goes way beyond simple rep counting by utilizing **MediaPipe Landmark Tracking**, localized **Geometric Inference**, and a **Strict Coach State Machine** to enforce perfect form execution dynamically in real-time.
 
 ---
 
 ## 🚀 Key Features
 
-### Intelligent Analysis
+### Clean Professional Dashboard
+- **Standard SaaS Aesthetic**: Mavis uses a beautifully polished "Clean Dark" design (Zinc backgrounds and True Blue accents) inspired by professional analytics tools like Vercel and Stripe. 
+- **Real-Time Biometrics Grid**: See live skeletal feedback and dynamic metrics (Current Phase, Flexion Angle, Total Rep Time) overlaid flawlessly onto the video feed.
+- **Dynamic Skeletal Feedback**: The tracking skeleton natively changes color based on your form execution—glowing **Emerald Green** for perfect reps and flashing **Ruby Red** for bad reps or cheating.
 
-- **Action Recognition**: Uses a custom LSTM model (`models/bicep_lstm.h5`) to verify you are performing the correct exercise (e.g., "Bicep Curl").
-- **Anti-Jitter Smoothing**: Implements `LandmarkSmoother` (Exponential Moving Average) to stabilize skeletal tracking and prevent false counts.
+### Expanded Exercise Library
+1. **Bicep Curls**
+   - **Full Range of Motion**: Demands full extension (>160°) and peak contraction (<45°).
+   - **Tempo Control**: Flags reps that are "Too Fast" (<1 second) to ensure muscle time-under-tension.
+   - **Elbow Stability**: Specifically tracks coordinates to alarm you if your elbow drifts forward or backwards during a heavy curl.
+2. **Shoulder Press**
+   - **Bilateral Asymmetry Tracking**: Measures both shoulders independently and alerts you if you lift unevenly (pressing harder on the right than the left).
+   - **Controlled Lockout**: Validates top-range hold times and tracks violent, uncontrolled negative drops.
 
-### strict Coach Mode
-
-Mavis enforces strict form rules required for hypertrophy:
-
-- **Full Range of Motion**: Requires full extension (>160°) and peak contraction (<45°).
-- **Tempo Control**: Flags reps that are "Too Fast" (<1 second) to ensure time-under-tension.
-- **Elbow Stability**: Detects and alerts if elbows drift sideways during curls.
-- **Bad Rep Counter**: distinct red counter for cheating/poor form reps.
+---
 
 ## ⚙️ Installation & Setup
 
@@ -44,7 +46,7 @@ Mavis enforces strict form rules required for hypertrophy:
    pip install -r requirements.txt
    ```
 
-3. **Run the Analyzer (Python Native)**
+3. **Run the Analyzer (Python Native Fallback)**
    ```bash
    python biceps.py
    ```
@@ -52,30 +54,27 @@ Mavis enforces strict form rules required for hypertrophy:
 
 ---
 
-## Running the Web Interface
+## 🖥️ Running the Web Interface
 
-Mavis includes a professional web frontend for exercise selection.
+Mavis is built natively for modern browsers via local deployment.
 
 1. **Start Local Server**
    ```bash
    python3 -m http.server 8000
    ```
-2. **Open in Browser**
+2. **Open the Dashboard**
    Go to: [http://localhost:8000/frontend/index.html](http://localhost:8000/frontend/index.html)
 3. **Usage**
-   Select your exercise. The camera feed will auto-pause after 20 seconds of inactivity.
+   Select your exercise from the Clean Dashboard. Position yourself within the camera frame, let the MediaPipe engine track your skeleton, and start your workout. The camera will automatically pause itself if no humans are detected for 20 seconds.
 
 ---
 
-## How It Works
+## 🧠 How the Engine Works
 
-1. **Input**: Webcam captures frame; flipped for mirror view.
-2. **Pose Extraction**: MediaPipe tracks 33 3D landmarks.
-3. **Smoothing**: `LandmarkSmoother` applies EMA filter to reduce noise.
-4. **Feature Extraction**: Calculates 10 key geometric angles.
-5. **AI Inference**: LSTM model confirms action is "Bicep Curl".
-6. **State Machine**:
-   - **DOWN**: Waiting for flexion. Check Extension > 160°.
-   - **UP**: Waiting for extension. Check Contraction < 45°.
-   - **Strict Checks**: If Velocity is high or Elbow Drift > 10%, increment **Bad Reps**.
-7. **Feedback**: UI updates with real-time cues ("Squeeze!", "Lower Slowly").
+1. **Input**: Webcam captures raw frames (macOS/Safari optimized manual request capturing).
+2. **Pose Extraction**: MediaPipe isolates 33 advanced 3D bodily landmarks.
+3. **Geometric Tracking**: Extracts crucial workout geometry (elbow flexion, glute-shoulder lines, bicep-torso deviation).
+4. **State Machine Inference**: 
+   - Uses precise logic to map out "DOWN", "UP", and "MID" eccentric/concentric workout states based on current skeletal ranges.
+   - Triggers `BadRepCount++` whenever cheating triggers (swinging torso, elbow drifting) are flagged.
+5. **Live Feedback UI**: Instantly reflects all data back into the DOM, changing the skeletal hues and rendering precise form correction notes in the Live Coaching Box.
