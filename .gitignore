@@ -6,12 +6,8 @@ __pycache__/
 .idea/
 models/
 
-# Ignore data folder contents by default
-data/*
+# Ignore data folder entirely
+data/
 
-
-# Allow specific video folders
-!data/videos/
-data/videos/*
-!data/videos/shoulder press/
-!data/videos/barbell biceps curl/
+# Node
+node_modules/

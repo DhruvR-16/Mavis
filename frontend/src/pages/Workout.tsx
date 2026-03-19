@@ -97,14 +97,22 @@ export default function Workout() {
   }, [resetInactivity]);
 
   const handleToggleCamera = async () => {
-    const result = await poseDetection.toggleCamera();
-    setCameraActive(!!result);
+    if (cameraActive) {
+      poseDetection.stopCamera();
+      setCameraActive(false);
+      timer.stop();
+    } else {
+      const success = await poseDetection.resumeCamera();
+      setCameraActive(!!success);
+      if (success) timer.start();
+    }
   };
 
   const handleResume = async () => {
     setShowTimeout(false);
     const success = await poseDetection.resumeCamera();
     setCameraActive(!!success);
+    if (success) timer.start();
     resetInactivity();
   };
 
