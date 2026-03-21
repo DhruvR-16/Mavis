@@ -47,9 +47,9 @@ export default function Workout() {
       const state = analyze(worldLandmarks, normalizedLandmarks);
       setWorkoutState({ ...state });
 
+      // Start timer on first successful detection
       if (!initializedRef.current) {
         initializedRef.current = true;
-        setShowLoading(false);
         timer.start();
       }
 
@@ -65,16 +65,25 @@ export default function Workout() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await poseDetection.init();
-      if (cancelled) return;
+      try {
+        await poseDetection.init();
+        if (cancelled) return;
 
-      const video = document.getElementById('webcam') as HTMLVideoElement;
-      const canvas = document.getElementById('pose-canvas') as HTMLCanvasElement;
-      if (video && canvas) {
-        const success = await poseDetection.startCamera(video, canvas);
-        if (success) {
-          setCameraActive(true);
-        } else {
+        const video = document.getElementById('webcam') as HTMLVideoElement;
+        const canvas = document.getElementById('pose-canvas') as HTMLCanvasElement;
+        if (video && canvas) {
+          const success = await poseDetection.startCamera(video, canvas);
+          if (!cancelled) {
+            setShowLoading(false); // Hide loading as soon as camera starts
+            if (success) {
+              setCameraActive(true);
+            } else {
+              setShowError(true);
+            }
+          }
+        }
+      } catch {
+        if (!cancelled) {
           setShowLoading(false);
           setShowError(true);
         }

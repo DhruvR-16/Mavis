@@ -78,7 +78,7 @@ const VideoPanel = forwardRef<HTMLDivElement, VideoPanelProps>(function VideoPan
       {props.showLoading && (
         <div className="absolute inset-0 bg-bg-main/90 backdrop-blur-sm flex flex-col items-center justify-center z-20">
           <h3 className="text-xl font-medium mb-2">Initializing Engine...</h3>
-          <p className="text-text-muted text-sm">Loading MediaPipe Pose Landmarker (Heavy Model)</p>
+          <p className="text-text-muted text-sm">Loading MediaPipe Pose Landmarker</p>
           <div className="w-8 h-8 mt-4 border-3 border-white/10 border-t-accent rounded-full animate-spin" />
         </div>
       )}
