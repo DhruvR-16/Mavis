@@ -1,93 +1,195 @@
+"""
+Mavis Feature Extractor
+Extracts 10 geometric features from MediaPipe landmarks.
+All spatial measurements are body-relative (normalized by shoulder width)
+so they are invariant to camera distance and user position.
+"""
+
 import numpy as np
-import mediapipe as mp
+import math
+
+
+# MediaPipe landmark indices
+LM = {
+    "nose": 0,
+    "left_shoulder": 11, "right_shoulder": 12,
+    "left_elbow": 13,    "right_elbow": 14,
+    "left_wrist": 15,    "right_wrist": 16,
+    "left_hip": 23,      "right_hip": 24,
+    "left_knee": 25,     "right_knee": 26,
+    "left_ankle": 27,    "right_ankle": 28,
+}
+
+# Visibility threshold — landmarks below this are considered unreliable
+VISIBILITY_THRESHOLD = 0.55
+
+
+def calculate_angle(a, b, c) -> float:
+    """
+    Compute the interior angle at vertex b formed by the ray b→a and ray b→c.
+    Returns degrees in [0, 180].
+    Human error tolerance: ±15° is acceptable for most exercises.
+    """
+    ax, ay = a.x - b.x, a.y - b.y
+    cx, cy = c.x - b.x, c.y - b.y
+    dot = ax * cx + ay * cy
+    mag_a = math.sqrt(ax**2 + ay**2) + 1e-9
+    mag_c = math.sqrt(cx**2 + cy**2) + 1e-9
+    cos_angle = max(-1.0, min(1.0, dot / (mag_a * mag_c)))
+    return math.degrees(math.acos(cos_angle))
+
+
+def get_shoulder_width(landmarks) -> float:
+    """
+    Returns Euclidean distance between shoulders as a normalisation factor.
+    Falls back to 0.2 (rough average) if landmarks are occluded.
+    """
+    ls = landmarks[LM["left_shoulder"]]
+    rs = landmarks[LM["right_shoulder"]]
+    if ls.visibility < VISIBILITY_THRESHOLD or rs.visibility < VISIBILITY_THRESHOLD:
+        return 0.2
+    dist = math.sqrt((ls.x - rs.x)**2 + (ls.y - rs.y)**2)
+    return max(dist, 0.05)  # prevent divide-by-zero
+
+
+def get_visibility_map(landmarks) -> dict:
+    """
+    Returns per-region visibility status for the UI warning system.
+    Each value is True (visible) or False (occluded).
+    """
+    def visible(idx):
+        return landmarks[idx].visibility >= VISIBILITY_THRESHOLD
+
+    return {
+        "left_arm":    visible(LM["left_shoulder"]) and visible(LM["left_elbow"]) and visible(LM["left_wrist"]),
+        "right_arm":   visible(LM["right_shoulder"]) and visible(LM["right_elbow"]) and visible(LM["right_wrist"]),
+        "shoulders":   visible(LM["left_shoulder"]) and visible(LM["right_shoulder"]),
+        "hips":        visible(LM["left_hip"]) and visible(LM["right_hip"]),
+        "left_leg":    visible(LM["left_hip"]) and visible(LM["left_knee"]) and visible(LM["left_ankle"]),
+        "right_leg":   visible(LM["right_hip"]) and visible(LM["right_knee"]) and visible(LM["right_ankle"]),
+    }
+
 
 class FeatureExtractor:
+    """
+    Extracts 10 normalised geometric features from a pose landmark set.
+
+    Feature vector (indices match the trained scaler):
+        0  – left elbow drift  (body-relative, vs calibrated anchor)
+        1  – left elbow angle  (degrees)
+        2  – right elbow angle (degrees)
+        3  – left shoulder angle
+        4  – right shoulder angle
+        5  – left wrist-to-shoulder vertical offset (body-relative)
+        6  – torso lean angle  (degrees, shoulder mid to hip mid vs vertical)
+        7  – bilateral elbow symmetry  (|left_angle - right_angle|)
+        8  – left wrist height  (body-relative, above shoulder = negative)
+        9  – right wrist height (body-relative)
+    """
+
     def __init__(self):
-        self.mp_pose = mp.solutions.pose
+        # Calibration anchor: set during the standing pose at session start
+        self.calibrated = False
+        self.calib_shoulder_width: float = 0.2
+        self.calib_left_elbow_x: float = 0.5
+        self.calib_right_elbow_x: float = 0.5
+        self.calib_torso_angle: float = 90.0
 
-    def calculate_angle(self, a, b, c):
+    def calibrate(self, landmarks) -> None:
         """
-        Calculates angle between three points a, b, c.
-        b is the vertex.
-        points are objects with x, y attributes.
+        Call once during the T-pose / neutral standing calibration phase.
+        Sets per-user body proportions so all subsequent drift calculations
+        are body-relative rather than screen-pixel-relative.
         """
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        c = np.array([c.x, c.y])
-        
-        radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-        angle = np.abs(radians*180.0/np.pi)
-        
-        if angle > 180.0:
-            angle = 360 - angle
-            
-        return angle
+        self.calib_shoulder_width = get_shoulder_width(landmarks)
+        self.calib_left_elbow_x   = landmarks[LM["left_elbow"]].x
+        self.calib_right_elbow_x  = landmarks[LM["right_elbow"]].x
+        ls = landmarks[LM["left_shoulder"]]
+        rs = landmarks[LM["right_shoulder"]]
+        lh = landmarks[LM["left_hip"]]
+        rh = landmarks[LM["right_hip"]]
 
-    def calculate_ground_angle(self, a, b):
-        """
-        Calculates angle of segment ab with respect to vertical axis.
-        """
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        
-        vec = b - a
-        vertical = np.array([0, 1]) # Assuming image y-axis points down
-        
-        unit_vec = vec / (np.linalg.norm(vec) + 1e-6)
-        
-        dot_product = np.dot(unit_vec, vertical)
-        angle = np.arccos(np.clip(dot_product, -1.0, 1.0)) * 180 / np.pi
-        
-        return angle
+        # Torso angle: angle at shoulder midpoint between vertical and hip midpoint
+        smx = (ls.x + rs.x) / 2
+        smy = (ls.y + rs.y) / 2
+        hmx = (lh.x + rh.x) / 2
+        hmy = (lh.y + rh.y) / 2
+        dx = hmx - smx
+        dy = hmy - smy
+        self.calib_torso_angle = math.degrees(math.atan2(abs(dx), abs(dy) + 1e-9))
+        self.calibrated = True
 
-    def get_features(self, landmarks):
+    def get_features(self, landmarks) -> list:
         """
-        Extracts the 10 angle features used in training.
-        Returns a list of 10 floats.
+        Returns a 10-element list matching the scaler's expected input.
+        Uses body-relative normalisation for all spatial measurements.
         """
-        P = self.mp_pose.PoseLandmark
-        
-        # Use Left side for primary analysis/training consistency if mixed
-        # or we could make it side-aware. Since previous step showed 'left' in CSV,
-        # we will extract left side features by default or mirror if needed.
-        # Ideally, we detect the active arm. For now, let's extract LEFT.
-        
-        # Helper to get point
-        def p(idx): return landmarks[idx.value]
-        
-        # 1. Shoulder Angle (Elbow-Shoulder-Hip)
-        shoulder_angle = self.calculate_angle(p(P.LEFT_ELBOW), p(P.LEFT_SHOULDER), p(P.LEFT_HIP))
-        
-        # 2. Elbow Angle (Shoulder-Elbow-Wrist)
-        elbow_angle = self.calculate_angle(p(P.LEFT_SHOULDER), p(P.LEFT_ELBOW), p(P.LEFT_WRIST))
-        
-        # 3. Hip Angle (Shoulder-Hip-Knee)
-        hip_angle = self.calculate_angle(p(P.LEFT_SHOULDER), p(P.LEFT_HIP), p(P.LEFT_KNEE))
-        
-        # 4. Knee Angle (Hip-Knee-Ankle)
-        knee_angle = self.calculate_angle(p(P.LEFT_HIP), p(P.LEFT_KNEE), p(P.LEFT_ANKLE))
-        
-        # 5. Ankle Angle (Knee-Ankle-Foot)
-        # Using LEFT_FOOT_INDEX as toe approximation
-        ankle_angle = self.calculate_angle(p(P.LEFT_KNEE), p(P.LEFT_ANKLE), p(P.LEFT_FOOT_INDEX))
-        
-        # Ground Angles
-        # 6. Shoulder Ground (Upper arm vs Vertical)
-        shoulder_ground = self.calculate_ground_angle(p(P.LEFT_SHOULDER), p(P.LEFT_ELBOW))
-        
-        # 7. Elbow Ground (Forearm vs Vertical)
-        elbow_ground = self.calculate_ground_angle(p(P.LEFT_ELBOW), p(P.LEFT_WRIST))
-        
-        # 8. Hip Ground (Thigh vs Vertical)
-        hip_ground = self.calculate_ground_angle(p(P.LEFT_HIP), p(P.LEFT_KNEE))
-        
-        # 9. Knee Ground (Shin vs Vertical)
-        knee_ground = self.calculate_ground_angle(p(P.LEFT_KNEE), p(P.LEFT_ANKLE))
-        
-        # 10. Ankle Ground (Foot vs Vertical)
-        ankle_ground = self.calculate_ground_angle(p(P.LEFT_ANKLE), p(P.LEFT_FOOT_INDEX))
-        
+        sw = get_shoulder_width(landmarks)
+
+        ls  = landmarks[LM["left_shoulder"]]
+        rs  = landmarks[LM["right_shoulder"]]
+        le  = landmarks[LM["left_elbow"]]
+        re  = landmarks[LM["right_elbow"]]
+        lw  = landmarks[LM["left_wrist"]]
+        rw  = landmarks[LM["right_wrist"]]
+        lh  = landmarks[LM["left_hip"]]
+        rh  = landmarks[LM["right_hip"]]
+
+        # ── angles ──────────────────────────────────────────────────────────
+        left_elbow_angle  = calculate_angle(ls, le, lw)
+        right_elbow_angle = calculate_angle(rs, re, rw)
+        left_shoulder_angle  = calculate_angle(le, ls, lh)
+        right_shoulder_angle = calculate_angle(re, rs, rh)
+
+        # ── torso lean ───────────────────────────────────────────────────────
+        smx = (ls.x + rs.x) / 2;  smy = (ls.y + rs.y) / 2
+        hmx = (lh.x + rh.x) / 2;  hmy = (lh.y + rh.y) / 2
+        torso_angle = math.degrees(math.atan2(abs(smx - hmx), abs(smy - hmy) + 1e-9))
+
+        # ── body-relative drift (elbow x vs calibrated anchor) ──────────────
+        anchor_x = self.calib_left_elbow_x if self.calibrated else ls.x
+        left_drift = abs(le.x - anchor_x) / sw
+
+        # ── wrist heights relative to shoulder (positive = below) ────────────
+        left_wrist_height  = (lw.y - ls.y) / sw
+        right_wrist_height = (rw.y - rs.y) / sw
+
+        # ── wrist-to-shoulder vertical offset ───────────────────────────────
+        wrist_shoulder_offset = (ls.y - lw.y) / sw   # positive when wrist above shoulder
+
+        # ── bilateral symmetry ───────────────────────────────────────────────
+        symmetry = abs(left_elbow_angle - right_elbow_angle)
+
         return [
-            shoulder_angle, elbow_angle, hip_angle, knee_angle, ankle_angle,
-            shoulder_ground, elbow_ground, hip_ground, knee_ground, ankle_ground
+            left_drift,            # 0
+            left_elbow_angle,      # 1
+            right_elbow_angle,     # 2
+            left_shoulder_angle,   # 3
+            right_shoulder_angle,  # 4
+            wrist_shoulder_offset, # 5
+            torso_angle,           # 6
+            symmetry,              # 7
+            left_wrist_height,     # 8
+            right_wrist_height,    # 9
         ]
+
+    def get_angles_for_display(self, landmarks) -> dict:
+        """
+        Returns a dict of named angles for the UI overlay.
+        These are the raw angles used by the state machines.
+        """
+        ls = landmarks[LM["left_shoulder"]]
+        rs = landmarks[LM["right_shoulder"]]
+        le = landmarks[LM["left_elbow"]]
+        re = landmarks[LM["right_elbow"]]
+        lw = landmarks[LM["left_wrist"]]
+        rw = landmarks[LM["right_wrist"]]
+        lh = landmarks[LM["left_hip"]]
+        rh = landmarks[LM["right_hip"]]
+
+        return {
+            "left_elbow":      calculate_angle(ls, le, lw),
+            "right_elbow":     calculate_angle(rs, re, rw),
+            "left_shoulder":   calculate_angle(le, ls, lh),
+            "right_shoulder":  calculate_angle(re, rs, rh),
+        }
