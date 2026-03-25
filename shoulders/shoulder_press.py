@@ -77,6 +77,7 @@ class ShoulderAnalyzer(BaseAnalyzer):
         self._min_left_angle     = 180.0
         self._min_right_angle    = 180.0
         self._max_asymmetry      = 0.0
+        self._fault_seen: set    = set()   # prevents per-frame fault spam
 
         # AI (same binary model — future: retrain as multi-class)
         self.lstm_model    = None
@@ -102,37 +103,44 @@ class ShoulderAnalyzer(BaseAnalyzer):
     def analyze_form(self, features: list, landmarks) -> None:
         """
         State machine for shoulder press.
-        features[3] = left shoulder angle, features[4] = right shoulder angle
-        features[7] = bilateral symmetry (|left - right|)
+        Angle: elbow angle (shoulder→elbow→wrist).
+        ~170° = lockout overhead. ~75° = bottom of press.
+        Fault-seen set prevents per-frame quality spam.
         """
-        left_angle  = features[3]
-        right_angle = features[4]
-        symmetry    = features[7]    # degrees difference between sides
+        from analyzer.feature_extractor import calculate_angle, LM
 
-        # Average of both sides for state transitions
-        avg_angle = (left_angle + right_angle) / 2.0
+        ls = landmarks[LM["left_shoulder"]]
+        rs = landmarks[LM["right_shoulder"]]
+        le = landmarks[LM["left_elbow"]]
+        re = landmarks[LM["right_elbow"]]
+        lw = landmarks[LM["left_wrist"]]
+        rw = landmarks[LM["right_wrist"]]
 
-        # Track per-rep extremes
+        left_angle  = calculate_angle(ls, le, lw)
+        right_angle = calculate_angle(rs, re, rw)
+        avg_angle   = (left_angle + right_angle) / 2.0
+        symmetry    = abs(left_angle - right_angle)
+
         self._max_left_angle  = max(self._max_left_angle,  left_angle)
         self._max_right_angle = max(self._max_right_angle, right_angle)
         self._min_left_angle  = min(self._min_left_angle,  left_angle)
         self._min_right_angle = min(self._min_right_angle, right_angle)
-        self._max_asymmetry   = max(self._max_asymmetry, symmetry)
+        self._max_asymmetry   = max(self._max_asymmetry,   symmetry)
 
-        # ── BOTTOM: arms at or below shoulder height ─────────────────────────
+        # ── BOTTOM: elbows bent, bottom of press ─────────────────────────────
         if avg_angle < (PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG):
             if self.stage == Stage.UP:
-                # Negative complete — count rep
                 duration = time.time() - self.rep_start_time
                 if duration < TEMPO_MIN_SECONDS:
                     self._add_fault("Too fast — control the descent", severity=20)
                 rep = self._complete_rep()
                 self._reset_rep_tracking()
-                self.stage     = Stage.DOWN
+                self.stage      = Stage.DOWN
                 self.form_color = (0, 255, 100)
-                self.feedback  = f"Rep {rep.rep_number} — {rep.quality}/100"
+                self.feedback   = f"Rep {rep.rep_number} — {rep.quality}/100"
             else:
-                self.stage    = Stage.DOWN
+                if self.stage != Stage.DOWN:
+                    self.stage = Stage.DOWN
                 self.feedback = "Press overhead"
 
         # ── TOP: arms near lockout ────────────────────────────────────────────
@@ -142,21 +150,26 @@ class ShoulderAnalyzer(BaseAnalyzer):
                 self._begin_rep()
                 self.feedback = "Lower with control"
 
-            # Check asymmetry
-            if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG:
-                self._add_fault(f"Uneven press — balance both arms", severity=20)
+            if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
+                    and "asym" not in self._fault_seen:
+                self._fault_seen.add("asym")
+                self._add_fault("Uneven press — balance both arms", severity=20)
                 self.feedback = "Left-right imbalance — press evenly"
+            elif not self._fault_seen:
+                self.feedback = "Lower with control"
 
         # ── MID-RANGE ─────────────────────────────────────────────────────────
         else:
             if self.stage == Stage.DOWN:
                 self.feedback = "Press up — full range"
             elif self.stage == Stage.UP:
-                if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG:
+                if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
+                        and "asym" not in self._fault_seen:
+                    self._fault_seen.add("asym")
                     self._add_fault("Uneven press", severity=15)
                     self.feedback = "Even out both arms"
                 else:
-                    self.feedback = "Lower with control"
+                    self.feedback = "Lower slowly"
 
     def _reset_rep_tracking(self):
         self._max_left_angle  = 0.0
@@ -164,6 +177,7 @@ class ShoulderAnalyzer(BaseAnalyzer):
         self._min_left_angle  = 180.0
         self._min_right_angle = 180.0
         self._max_asymmetry   = 0.0
+        self._fault_seen      = set()
         self.form_quality     = 100
         self.form_color       = (0, 255, 100)
 

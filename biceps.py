@@ -93,6 +93,7 @@ class BicepAnalyzer(BaseAnalyzer):
         self._bottom_angle_this_rep = 0.0    # highest angle reached (best extension)
         self._max_drift_this_rep   = 0.0
         self._max_torso_lean_this_rep = 0.0
+        self._fault_seen: set = set()        # tracks which faults already fired this rep
 
         self._load_models()
 
@@ -143,56 +144,69 @@ class BicepAnalyzer(BaseAnalyzer):
     def analyze_form(self, features: list, landmarks) -> None:
         """
         State machine for bicep curl rep counting and form analysis.
-        Tolerances applied: ±ANGLE_TOLERANCE_DEG on all angle thresholds.
-        Body-relative elbow drift used (not screen pixels).
+
+        Key design decisions:
+        - Drift is ONLY checked at peak contraction (elbow < UP_THRESH).
+          During the lifting phase the elbow naturally moves — checking it
+          mid-range causes constant false positives.
+        - Faults are recorded at most ONCE per rep (tracked via _fault_seen)
+          so the quality score isn't hammered 30× per second.
+        - Torso lean tolerance is 25° (not 20°) — humans naturally micro-sway.
+        - Tolerance band of ±ANGLE_TOLERANCE_DEG applied on all thresholds.
         """
-        elbow_angle = features[1]          # left elbow angle (degrees)
-        drift       = features[0]          # body-relative elbow drift
-        torso_lean  = features[6]          # degrees from vertical
+        elbow_angle = features[1]   # left elbow angle (degrees)
+        drift       = features[0]   # body-relative elbow x drift
+        torso_lean  = features[6]   # degrees lean from vertical
 
         # Track per-rep extremes for quality scoring
-        self._peak_angle_this_rep  = min(self._peak_angle_this_rep,  elbow_angle)
-        self._bottom_angle_this_rep = max(self._bottom_angle_this_rep, elbow_angle)
-        self._max_drift_this_rep   = max(self._max_drift_this_rep,   drift)
+        self._peak_angle_this_rep     = min(self._peak_angle_this_rep,  elbow_angle)
+        self._bottom_angle_this_rep   = max(self._bottom_angle_this_rep, elbow_angle)
+        self._max_drift_this_rep      = max(self._max_drift_this_rep,   drift)
         self._max_torso_lean_this_rep = max(self._max_torso_lean_this_rep, torso_lean)
 
-        # ── DOWN detection: arm fully extended ───────────────────────────────
+        # ── DOWN: arm fully extended ─────────────────────────────────────────
         if elbow_angle > (DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG):
             if self.stage == Stage.UP:
-                # Rep completed — going back down
                 duration = time.time() - self.rep_start_time
                 if duration < TEMPO_MIN_SECONDS:
                     self._add_fault("Too fast — control the negative", severity=25)
                 rep = self._complete_rep()
                 self._reset_rep_tracking()
-                self.stage    = Stage.DOWN
+                self.stage      = Stage.DOWN
                 self.form_color = (0, 255, 100)
                 self.feedback   = f"Rep {rep.rep_number} — {rep.quality}/100"
             else:
-                self.stage      = Stage.DOWN
-                self.feedback   = "Curl up"
-                self.form_color = (0, 255, 100)
+                if self.stage != Stage.DOWN:
+                    self.stage = Stage.DOWN
+                self.feedback = "Curl up — full range"
 
-        # ── UP detection: peak contraction reached ────────────────────────────
+        # ── UP: peak contraction ─────────────────────────────────────────────
         elif elbow_angle < (UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG):
             if self.stage == Stage.DOWN:
                 self.stage = Stage.UP
                 self._begin_rep()
                 self.feedback = "Squeeze — lower slowly"
 
-            # Check form faults while in UP or moving through mid-range
-            if drift > DRIFT_TOLERANCE_BODY:
-                self._add_fault("Fix elbow — don't let it drift", severity=20)
-                self.feedback = "Elbow drifting — pin it to your side"
+            # Drift only meaningful at peak — elbow forward away from body
+            # Only flag once per rep to avoid spamming the quality score
+            if drift > DRIFT_TOLERANCE_BODY and "drift" not in self._fault_seen:
+                self._fault_seen.add("drift")
+                self._add_fault("Elbow drifting forward", severity=20)
+                self.feedback = "Pin elbow to your side"
 
-            if torso_lean > 20.0 + ANGLE_TOLERANCE_DEG:
+            # Torso swing — 25° tolerance (real human micro-sway is ≤15°)
+            elif torso_lean > 25.0 and "torso" not in self._fault_seen:
+                self._fault_seen.add("torso")
                 self._add_fault("Torso swinging", severity=15)
-                self.feedback = "No swinging — keep torso upright"
+                self.feedback = "Keep torso still — no swinging"
 
-        # ── MID-RANGE guidance ────────────────────────────────────────────────
+            elif self.stage == Stage.UP and not self._fault_seen:
+                self.feedback = "Lower slowly"
+
+        # ── MID-RANGE: between down and up ───────────────────────────────────
         else:
             if self.stage == Stage.DOWN:
-                self.feedback = "Curl up — full range"
+                self.feedback = "Curl up"
             elif self.stage == Stage.UP:
                 self.feedback = "Lower slowly"
 
@@ -201,6 +215,7 @@ class BicepAnalyzer(BaseAnalyzer):
         self._bottom_angle_this_rep   = 0.0
         self._max_drift_this_rep      = 0.0
         self._max_torso_lean_this_rep = 0.0
+        self._fault_seen              = set()
         self.form_quality             = 100
         self.form_color               = (0, 255, 100)
 

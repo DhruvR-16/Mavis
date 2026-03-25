@@ -4,7 +4,6 @@ venv/
 __pycache__/
 *.pyc
 .idea/
-models/
 
 # Ignore data folder entirely
 data/

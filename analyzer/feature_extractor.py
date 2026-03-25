@@ -1,10 +1,3 @@
-"""
-Mavis Feature Extractor
-Extracts 10 geometric features from MediaPipe landmarks.
-All spatial measurements are body-relative (normalized by shoulder width)
-so they are invariant to camera distance and user position.
-"""
-
 import numpy as np
 import math
 
@@ -146,8 +139,16 @@ class FeatureExtractor:
         hmx = (lh.x + rh.x) / 2;  hmy = (lh.y + rh.y) / 2
         torso_angle = math.degrees(math.atan2(abs(smx - hmx), abs(smy - hmy) + 1e-9))
 
-        # ── body-relative drift (elbow x vs calibrated anchor) ──────────────
-        anchor_x = self.calib_left_elbow_x if self.calibrated else ls.x
+        # ── body-relative elbow drift vs shoulder-hip plumb line ─────────────
+        # We measure how far the elbow is horizontally from directly below the
+        # shoulder — this is stable regardless of arm position and captures the
+        # real fault: elbow swinging FORWARD away from the body.
+        # When calibrated we use the recorded neutral elbow-x; otherwise fall
+        # back to the shoulder x (direct plumb), which is conservative but safe.
+        if self.calibrated:
+            anchor_x = self.calib_left_elbow_x
+        else:
+            anchor_x = ls.x   # shoulder x is the plumb reference
         left_drift = abs(le.x - anchor_x) / sw
 
         # ── wrist heights relative to shoulder (positive = below) ────────────
