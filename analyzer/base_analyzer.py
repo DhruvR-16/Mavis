@@ -12,9 +12,7 @@ Every exercise analyzer (BicepAnalyzer, ShoulderAnalyzer, etc.) inherits from th
 """
 
 import time
-import math
 from enum import Enum
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -101,7 +99,6 @@ class BaseAnalyzer:
 
         # ── rep timing ───────────────────────────────────────────────────────
         self.rep_start_time   = 0.0
-        self.rep_phase_times  = {}     # e.g. {"down": 0.0, "up": 0.0}
 
         # ── quality history for trend graph ──────────────────────────────────
         self.rep_history: list[RepResult] = []

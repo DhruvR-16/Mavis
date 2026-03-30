@@ -8,9 +8,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
-import os
-import pickle
-from collections import deque
 
 from analyzer.base_analyzer import (
     BaseAnalyzer, Stage, CalibrationState,
@@ -27,9 +24,6 @@ except ImportError:
 # ── Thresholds ────────────────────────────────────────────────────────────────
 PRESS_TOP_IDEAL    = 165.0   # near-full lockout at top
 PRESS_BOTTOM_IDEAL = 75.0    # elbows below shoulder height at bottom
-SEQUENCE_LENGTH    = 30
-CONFIDENCE_THRESHOLD = 0.7
-MODELS_DIR         = os.path.join(os.path.dirname(__file__), 'models')
 
 # Quality weights
 QUALITY_WEIGHT_LOCKOUT   = 35
@@ -79,26 +73,6 @@ class ShoulderAnalyzer(BaseAnalyzer):
         self._max_asymmetry      = 0.0
         self._fault_seen: set    = set()   # prevents per-frame fault spam
 
-        # AI (same binary model — future: retrain as multi-class)
-        self.lstm_model    = None
-        self.scaler        = None
-        self.label_encoder = None
-        self.seq_buffer    = deque(maxlen=SEQUENCE_LENGTH)
-        self.ai_confidence = 0.0
-
-        self._load_models()
-
-    def _load_models(self):
-        if not _TF_AVAILABLE:
-            return
-        try:
-            self.lstm_model    = tf.keras.models.load_model(os.path.join(MODELS_DIR,'bicep_lstm.h5'))
-            with open(os.path.join(MODELS_DIR,'scaler.pkl'),'rb') as f:
-                self.scaler = pickle.load(f)
-            with open(os.path.join(MODELS_DIR,'label_encoder.pkl'),'rb') as f:
-                self.label_encoder = pickle.load(f)
-        except Exception as e:
-            print(f"[ShoulderAnalyzer] Model load failed: {e}")
 
     def analyze_form(self, features: list, landmarks) -> None:
         """
