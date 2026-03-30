@@ -46,9 +46,14 @@
    pip install -r requirements.txt
    ```
 
-3. **Run the Analyzer (Python Native Fallback)**
+3. **Run the Analyzer**
    ```bash
-   python biceps.py
+   # Launch interactively
+   python run.py
+
+   # Or run specific exercise directly
+   python run.py bicep
+   python run.py shoulder
    ```
    _Press 'q' to quit the window._
 

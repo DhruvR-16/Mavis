@@ -31,10 +31,10 @@ def main():
         exercise = "bicep" if choice == "1" else "shoulder"
 
     if exercise == "bicep":
-        from biceps import BicepAnalyzer
+        from exercises.bicep.analyzer import BicepAnalyzer
         analyzer = BicepAnalyzer()
     else:
-        from shoulders.shoulder_press import ShoulderAnalyzer
+        from exercises.shoulder.analyzer import ShoulderAnalyzer
         analyzer = ShoulderAnalyzer()
 
     if args.sets > 0:

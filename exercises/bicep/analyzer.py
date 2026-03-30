@@ -30,7 +30,7 @@ DOWN_ANGLE_IDEAL = 160.0   # full extension
 
 SEQUENCE_LENGTH       = 30
 CONFIDENCE_THRESHOLD  = 0.7
-MODELS_DIR            = os.path.join(os.path.dirname(__file__), '..', 'models')
+MODELS_DIR            = os.path.join(os.path.dirname(__file__), 'models')
 
 # Rep quality scoring weights (must sum to 100)
 QUALITY_WEIGHT_RANGE    = 40   # did they hit full ROM?

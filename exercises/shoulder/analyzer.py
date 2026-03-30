@@ -29,7 +29,7 @@ PRESS_TOP_IDEAL    = 165.0   # near-full lockout at top
 PRESS_BOTTOM_IDEAL = 75.0    # elbows below shoulder height at bottom
 SEQUENCE_LENGTH    = 30
 CONFIDENCE_THRESHOLD = 0.7
-MODELS_DIR         = os.path.join(os.path.dirname(__file__), '..', 'models')
+MODELS_DIR         = os.path.join(os.path.dirname(__file__), 'models')
 
 # Quality weights
 QUALITY_WEIGHT_LOCKOUT   = 35
