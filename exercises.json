@@ -1,0 +1,83 @@
+{
+  "_comment": [
+    "Single source of truth for exercise definitions, loaded by BOTH runtimes:",
+    "  Python  -> analyzer/exercise_config.py",
+    "  Web     -> frontend/src/engine/config.ts",
+    "Changing a threshold here changes it everywhere. Previously these numbers",
+    "were duplicated by hand in each runtime and had already drifted apart -",
+    "the web engine was measuring the shoulder joint while Python measured the",
+    "elbow, using identical thresholds for both.",
+    "Landmark indices are MediaPipe Pose indices."
+  ],
+
+  "tolerances": {
+    "angleDeg": 15.0,
+    "driftBodyRatio": 0.18,
+    "symmetryDeg": 20.0,
+    "tempoMinSeconds": 0.8,
+    "visibilityThreshold": 0.55,
+    "visibilityWarnFrames": 12
+  },
+
+  "calibration": {
+    "holdSeconds": 3.0,
+    "stabilityTolerance": 0.03,
+    "keyPoints": [11, 12, 13, 14, 15, 16]
+  },
+
+  "exercises": {
+    "bicep": {
+      "displayName": "Bicep Curl",
+      "accent": "#4ade80",
+
+      "_angleComment": "Elbow flexion: shoulder -> elbow -> wrist. Low = contracted.",
+      "angle": {
+        "triplets": { "left": [11, 13, 15], "right": [12, 14, 16] },
+        "armSelection": "active"
+      },
+
+      "_thresholdComment": "Crossed with +/- tolerances.angleDeg applied at check time.",
+      "thresholds": { "up": 45.0, "down": 160.0 },
+      "direction": "flexion",
+
+      "scoring": { "range": 40, "tempo": 25, "drift": 20, "torso": 15 },
+
+      "faults": {
+        "tempo": { "message": "Too fast — control the negative", "severity": 25 },
+        "drift": { "message": "Elbow drifting forward", "severity": 20 },
+        "torso": { "message": "Torso swinging", "severity": 15, "toleranceDeg": 25.0 }
+      },
+
+      "requiredRegions": ["left_arm", "right_arm"]
+    },
+
+    "shoulder": {
+      "displayName": "Shoulder Press",
+      "accent": "#22d3ee",
+
+      "_angleComment": [
+        "Elbow extension: shoulder -> elbow -> wrist. High = locked out.",
+        "The web engine used to measure elbow -> shoulder -> hip here, a",
+        "different joint entirely, while applying these same thresholds."
+      ],
+      "angle": {
+        "triplets": { "left": [11, 13, 15], "right": [12, 14, 16] },
+        "armSelection": "bilateral"
+      },
+
+      "thresholds": { "up": 165.0, "down": 75.0 },
+      "direction": "extension",
+
+      "scoring": { "lockout": 35, "depth": 30, "symmetry": 20, "tempo": 15 },
+
+      "_faultsComment": "symmetryMidRange fires while still pressing; symmetry fires at lockout, where an imbalance is more serious.",
+      "faults": {
+        "tempo": { "message": "Too fast — control the descent", "severity": 20 },
+        "symmetry": { "message": "Uneven press — balance both arms", "severity": 20 },
+        "symmetryMidRange": { "message": "Uneven press", "severity": 15 }
+      },
+
+      "requiredRegions": ["left_arm", "right_arm", "shoulders"]
+    }
+  }
+}

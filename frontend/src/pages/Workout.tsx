@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Chart } from 'chart.js/auto';
 import { usePoseDetection, type PoseLandmark } from '../hooks/usePoseDetection';
+import { CALIBRATION, TOLERANCES, getExercise } from '../engine/config';
 import './Workout.css';
 
 type Landmark = {
@@ -57,16 +58,19 @@ type SessionState = {
   lastFeedback: string;
 };
 
-const TOLERANCE = 15;
-const DRIFT_TOL = 0.18;
-const MIN_TEMPO_MS = 800;
+// Thresholds and tolerances come from the repo-root exercises.json, which the
+// Python engine reads too — see frontend/src/engine/config.ts.
+const TOLERANCE = TOLERANCES.angleDeg;
+const DRIFT_TOL = TOLERANCES.driftBodyRatio;
+const MIN_TEMPO_MS = TOLERANCES.tempoMinSeconds * 1000;
+const CALIB_HOLD_MS = CALIBRATION.holdSeconds * 1000;
 
 // Calibration must be held genuinely still: if these key points move more
 // than this (normalised coordinate units) between frames, the countdown
 // restarts rather than completing against whatever pose is held at the
 // deadline (e.g. mid-curl).
-const CALIB_STABILITY_TOL = 0.03;
-const CALIB_KEY_POINTS = [11, 12, 13, 14, 15, 16];
+const CALIB_STABILITY_TOL = CALIBRATION.stabilityTolerance;
+const CALIB_KEY_POINTS = CALIBRATION.keyPoints;
 
 // peakAngle/bottomAngle track opposite extremes depending on exercise: bicep
 // tracks a MIN (deepest contraction) and a MAX (fullest extension) of the
@@ -134,11 +138,18 @@ export default function Workout() {
   const VOICE_ON = params.get('voice') !== '0';
 
   const IS_BICEP = EXERCISE === 'bicep';
-  const ACCENT = IS_BICEP ? '#4ade80' : '#22d3ee';
+  const DEF = useMemo(() => getExercise(EXERCISE), [EXERCISE]);
+  const ACCENT = DEF.accent;
 
   const THRESH = useMemo(
-    () => (IS_BICEP ? { upIdeal: 45, downIdeal: 160, asym: 999 } : { upIdeal: 165, downIdeal: 75, asym: 20 }),
-    [IS_BICEP],
+    () => ({
+      upIdeal: DEF.thresholds.up,
+      downIdeal: DEF.thresholds.down,
+      // Bicep curls are single-arm, so bilateral symmetry is not scored;
+      // an unreachable threshold disables the check.
+      asym: IS_BICEP ? Number.POSITIVE_INFINITY : TOLERANCES.symmetryDeg,
+    }),
+    [DEF, IS_BICEP],
   );
 
   const [state, setState] = useState<SessionState>(() => initialState(IS_BICEP));
@@ -272,23 +283,24 @@ export default function Workout() {
     const snapshot = stateRef.current;
     let q = 100;
 
+    const w = DEF.scoring;
+    const dur = Date.now() - snapshot.repStartTime;
+
     if (IS_BICEP) {
-      if (snapshot.peakAngle > THRESH.upIdeal + TOLERANCE) q -= 40;
-      if (snapshot.bottomAngle < THRESH.downIdeal - TOLERANCE * 2) q -= 20;
+      if (snapshot.peakAngle > THRESH.upIdeal + TOLERANCE) q -= w.range;
+      if (snapshot.bottomAngle < THRESH.downIdeal - TOLERANCE * 2) q -= Math.round(w.range * 0.5);
       if (snapshot.maxDrift > DRIFT_TOL) {
-        q -= Math.min(20, Math.round((20 * (snapshot.maxDrift - DRIFT_TOL)) / DRIFT_TOL));
+        q -= Math.min(w.drift, Math.round((w.drift * (snapshot.maxDrift - DRIFT_TOL)) / DRIFT_TOL));
       }
-      if (snapshot.maxLean > 20 + TOLERANCE) q -= 15;
-      const dur = (Date.now() - snapshot.repStartTime) / 1000;
-      if (dur < MIN_TEMPO_MS / 1000) q -= 25;
+      if (snapshot.maxLean > DEF.faults.torso.toleranceDeg!) q -= w.torso;
+      if (dur < MIN_TEMPO_MS) q -= w.tempo;
     } else {
-      if (snapshot.peakAngle < THRESH.upIdeal - TOLERANCE) q -= 35;
-      if (snapshot.bottomAngle > THRESH.downIdeal + TOLERANCE) q -= 30;
+      if (snapshot.peakAngle < THRESH.upIdeal - TOLERANCE) q -= w.lockout;
+      if (snapshot.bottomAngle > THRESH.downIdeal + TOLERANCE) q -= w.depth;
       if (snapshot.maxDrift > THRESH.asym + TOLERANCE) {
-        q -= Math.min(20, Math.round((20 * (snapshot.maxDrift - THRESH.asym)) / THRESH.asym));
+        q -= Math.min(w.symmetry, Math.round((w.symmetry * (snapshot.maxDrift - THRESH.asym)) / THRESH.asym));
       }
-      const dur = (Date.now() - snapshot.repStartTime) / 1000;
-      if (dur < MIN_TEMPO_MS / 1000) q -= 15;
+      if (dur < MIN_TEMPO_MS) q -= w.tempo;
     }
 
     return Math.max(0, Math.min(100, q));
@@ -499,8 +511,10 @@ export default function Workout() {
         beginRep();
         mutateRef({ stage: 'up' });
       }
-      if (drift > DRIFT_TOL) addFault('Elbow drifting forward', 18);
-      if (torsoLean > 20 + TOLERANCE) addFault('Too much torso swing', 15);
+      if (drift > DRIFT_TOL) addFault(DEF.faults.drift.message, DEF.faults.drift.severity);
+      if (torsoLean > DEF.faults.torso.toleranceDeg!) {
+        addFault(DEF.faults.torso.message, DEF.faults.torso.severity);
+      }
       setFeedback(stateRef.current.repFaults[0] || 'Squeeze at top', stateRef.current.repFaults.length ? 'bad' : 'good');
       return;
     }
@@ -510,15 +524,14 @@ export default function Workout() {
   };
 
   const analyzeShoulder = (lms: Landmark[]) => {
-    const ls = lms[11];
-    const rs = lms[12];
-    const le = lms[13];
-    const re = lms[14];
-    const lh = lms[23];
-    const rh = lms[24];
+    // Elbow extension (shoulder -> elbow -> wrist), per the shared definition.
+    // This used to measure elbow -> shoulder -> hip — a different joint —
+    // while applying the same thresholds the Python engine used for the elbow.
+    const [lsIdx, leIdx, lwIdx] = DEF.angle.triplets.left;
+    const [rsIdx, reIdx, rwIdx] = DEF.angle.triplets.right;
 
-    const leftA = angle3(le, ls, lh);
-    const rightA = angle3(re, rs, rh);
+    const leftA = angle3(lms[lsIdx], lms[leIdx], lms[lwIdx]);
+    const rightA = angle3(lms[rsIdx], lms[reIdx], lms[rwIdx]);
     const avg = (leftA + rightA) / 2;
     const asym = Math.abs(leftA - rightA);
 
@@ -541,7 +554,9 @@ export default function Workout() {
         beginRep();
         mutateRef({ stage: 'up' });
       }
-      if (asym > THRESH.asym + TOLERANCE) addFault('Arms are uneven', 18);
+      if (asym > THRESH.asym + TOLERANCE) {
+        addFault(DEF.faults.symmetry.message, DEF.faults.symmetry.severity);
+      }
       setFeedback(stateRef.current.repFaults[0] || 'Lockout overhead', stateRef.current.repFaults.length ? 'bad' : 'good');
       return;
     }
@@ -655,10 +670,13 @@ export default function Workout() {
       calibRefPointsRef.current = keyPoints;
 
       const elapsed = Date.now() - (stateRef.current.calibStart || Date.now());
-      const pct = Math.min(100, (elapsed / 3000) * 100);
-      setCalibProgress({ width: pct, text: `Hold still - ${((3000 - elapsed) / 1000).toFixed(1)}s` });
+      const pct = Math.min(100, (elapsed / CALIB_HOLD_MS) * 100);
+      setCalibProgress({
+        width: pct,
+        text: `Hold still - ${((CALIB_HOLD_MS - elapsed) / 1000).toFixed(1)}s`,
+      });
 
-      if (elapsed >= 3000) {
+      if (elapsed >= CALIB_HOLD_MS) {
         mutateRef({
           calibrated: true,
           calib: {

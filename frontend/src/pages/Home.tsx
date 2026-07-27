@@ -267,7 +267,7 @@ export default function Home() {
         </button>
 
         <footer>
-          <p>Mavis v2.0 - MediaPipe + LSTM pose engine</p>
+          <p>Mavis v2.0 - MediaPipe pose engine</p>
           <p>Built with love by Dhruv &amp; team</p>
         </footer>
       </div>

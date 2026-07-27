@@ -1,0 +1,11 @@
+# Mavis — test dependencies.
+#
+#     pip install -r requirements-dev.txt
+#     pytest
+#
+# The suite replays recorded landmark fixtures (fixtures/*.json) through the
+# analyzers, so it needs the runtime deps but not TensorFlow.
+
+-r requirements.txt
+
+pytest==8.4.2

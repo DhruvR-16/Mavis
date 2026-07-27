@@ -16,23 +16,30 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
 
+from analyzer.exercise_config import calibration, tolerances
 from analyzer.feature_extractor import LM
 
 
 # ── Tolerance constants ──────────────────────────────────────────────────────
-# Real humans never hit perfect angles. These bands define the acceptable
+# Sourced from exercises.json so the web engine reads the identical values.
+# Real humans never hit perfect angles; these bands define the acceptable
 # deviation from ideal before a form fault is raised.
-ANGLE_TOLERANCE_DEG   = 15.0   # ±15° acceptable on all angle thresholds
-DRIFT_TOLERANCE_BODY  = 0.18   # elbow drift: 18% of shoulder-width is fine
-SYMMETRY_TOLERANCE    = 20.0   # bilateral asymmetry below 20° is acceptable
-TEMPO_MIN_SECONDS     = 0.8    # reps faster than this are flagged (not 1.0 – gives wiggle room)
-VISIBILITY_WARN_FRAMES = 12    # frames below visibility threshold before warning fires
+_TOL = tolerances()
+_CALIB = calibration()
+
+ANGLE_TOLERANCE_DEG    = _TOL["angleDeg"]          # ±° acceptable on all angle thresholds
+DRIFT_TOLERANCE_BODY   = _TOL["driftBodyRatio"]    # elbow drift as a fraction of shoulder width
+SYMMETRY_TOLERANCE     = _TOL["symmetryDeg"]       # acceptable bilateral asymmetry
+TEMPO_MIN_SECONDS      = _TOL["tempoMinSeconds"]   # eccentric faster than this is flagged
+VISIBILITY_WARN_FRAMES = _TOL["visibilityWarnFrames"]
 
 # Calibration must be held genuinely still: if key points move more than this
 # (normalised coordinate units) between frames, the countdown restarts rather
 # than completing against whatever pose happens to be held at the deadline.
-CALIB_STABILITY_TOLERANCE = 0.03
-CALIB_KEY_POINTS = ("left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist")
+CALIB_STABILITY_TOLERANCE = _CALIB["stabilityTolerance"]
+CALIB_HOLD_SECONDS        = _CALIB["holdSeconds"]
+_INDEX_TO_NAME = {v: k for k, v in LM.items()}
+CALIB_KEY_POINTS = tuple(_INDEX_TO_NAME[i] for i in _CALIB["keyPoints"])
 
 
 class Stage(Enum):
@@ -96,7 +103,7 @@ class BaseAnalyzer:
         # ── state ────────────────────────────────────────────────────────────
         self.stage            = Stage.IDLE
         self.calib_state      = CalibrationState.NEEDED
-        self.calib_countdown  = 3.0     # seconds of stable pose required
+        self.calib_countdown  = CALIB_HOLD_SECONDS   # seconds of stable pose required
         self.calib_start_time = 0.0
         self._calib_ref_points: Optional[list] = None   # key points from the previous calibration frame
 

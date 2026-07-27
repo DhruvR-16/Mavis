@@ -119,6 +119,42 @@ later; see [Known Issues](#-known-issues).
 
 ---
 
+### 5. Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite replays landmark fixtures recorded from real workout video
+(`fixtures/*.json`, produced by `tools/extract_fixture.py`) through the
+analyzers and asserts rep counts, quality scores, and faults. Replay uses a
+virtual clock derived from the source video's frame rate, so tempo-dependent
+scoring behaves as it would live rather than completing instantly.
+
+---
+
+## 🔗 Shared exercise definitions
+
+Thresholds, tolerances, scoring weights, and fault messages live in one file —
+[`exercises.json`](exercises.json) — read by **both** runtimes:
+
+| Runtime | Loader |
+|---|---|
+| Python | `analyzer/exercise_config.py` |
+| Web | `frontend/src/engine/config.ts` |
+
+Changing a number there changes it everywhere, and `tests/test_shared_config.py`
+fails if a runtime stops tracking the shared file. This exists because the two
+engines had already drifted: the web app was measuring the **shoulder** joint
+for a press while Python measured the **elbow**, applying identical 165°/75°
+thresholds to both. The shared definition settles it on the elbow.
+
+Adding an exercise is mostly a data change, though each runtime still needs a
+state machine for it.
+
+---
+
 ## 🧠 How the engine works
 
 1. **Input** — webcam frames, mirrored horizontally so the view matches a mirror.
@@ -142,6 +178,19 @@ This project is pre-1.0 and these are tracked, not hidden:
   from not running at all, at the cost of a `model.predict()` call every frame. Both
   analyzers are geometric-only now. `tools/train_bicep_lstm.py` remains for anyone who
   captures real multi-class data.
+- **"Tempo" measures only the eccentric, not the whole rep.** The timer starts at
+  peak contraction / lockout and stops at full extension / the bottom, so it clocks
+  the lowering phase alone. `RepResult.duration_sec` and the session summary's
+  `rep_durations` nevertheless present it as the rep duration. On
+  `fixtures/shoulder_press.json` — four presses over seven seconds, ~1.75 s each —
+  the measured intervals are 0.53–0.60 s, so all four trip the 0.8 s threshold.
+  Either the threshold wants retuning for eccentric-only measurement, or the timer
+  should span the full rep. Both engines behave identically here.
+- **The web engine's analysis logic still lives inside `Workout.tsx`**, so unlike
+  the Python engine it has no automated test coverage. Extracting it into a pure
+  module is what would let the same fixtures verify both engines agree.
+- **Angles are computed in 2D**, discarding MediaPipe's `z`. Standing off-axis to
+  the camera skews every measurement.
 - **Session history is not persisted** beyond the single most recent session
   (`localStorage`).
 
@@ -150,15 +199,21 @@ This project is pre-1.0 and these are tracked, not hidden:
 ## 📁 Layout
 
 ```
+exercises.json            Shared thresholds/scoring — read by BOTH runtimes
 run.py                    Desktop launcher (CLI)
 analyzer/                 Shared desktop engine
   base_analyzer.py          Program mode, scoring, calibration
   feature_extractor.py      Landmark → geometric feature vector
+  exercise_config.py        Loads exercises.json
 exercises/
   bicep/analyzer.py         Bicep curl state machine (geometric only)
   shoulder/analyzer.py      Shoulder press state machine (geometric only)
+fixtures/                 Landmark sequences recorded from real video
+tests/                    pytest suite replaying those fixtures
+tools/extract_fixture.py  Video → landmark fixture
 tools/train_bicep_lstm.py Classifier training — not currently useful, see Known Issues
-frontend/                 React web app (self-contained)
+frontend/                 React web app
+  src/engine/config.ts      Loads exercises.json
   src/pages/Workout.tsx     Live session: pose loop, scoring, UI
   src/pages/Home.tsx        Exercise and program selection
 ```

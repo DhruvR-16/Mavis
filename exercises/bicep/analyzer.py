@@ -11,18 +11,25 @@ import mediapipe as mp
 import time
 
 from analyzer.base_analyzer import BaseAnalyzer, Stage, CalibrationState, ANGLE_TOLERANCE_DEG, DRIFT_TOLERANCE_BODY, TEMPO_MIN_SECONDS
+from analyzer.exercise_config import exercise
 from analyzer.feature_extractor import FeatureExtractor, get_visibility_map, LM
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-# Core angles — tolerance band of ±ANGLE_TOLERANCE_DEG is applied at check time
-UP_ANGLE_IDEAL   = 45.0    # full peak contraction
-DOWN_ANGLE_IDEAL = 160.0   # full extension
+# All sourced from exercises.json — see analyzer/exercise_config.py.
+# Tolerance band of ±ANGLE_TOLERANCE_DEG is applied at check time.
+_CFG = exercise("bicep")
+
+UP_ANGLE_IDEAL   = _CFG["thresholds"]["up"]     # full peak contraction
+DOWN_ANGLE_IDEAL = _CFG["thresholds"]["down"]   # full extension
 
 # Rep quality scoring weights (must sum to 100)
-QUALITY_WEIGHT_RANGE    = 40   # did they hit full ROM?
-QUALITY_WEIGHT_TEMPO    = 25   # was it controlled (not too fast)?
-QUALITY_WEIGHT_DRIFT    = 20   # was the elbow stable?
-QUALITY_WEIGHT_TORSO    = 15   # did the torso stay upright?
+QUALITY_WEIGHT_RANGE = _CFG["scoring"]["range"]   # did they hit full ROM?
+QUALITY_WEIGHT_TEMPO = _CFG["scoring"]["tempo"]   # was it controlled (not too fast)?
+QUALITY_WEIGHT_DRIFT = _CFG["scoring"]["drift"]   # was the elbow stable?
+QUALITY_WEIGHT_TORSO = _CFG["scoring"]["torso"]   # did the torso stay upright?
+
+_FAULTS = _CFG["faults"]
+TORSO_TOLERANCE_DEG = _FAULTS["torso"]["toleranceDeg"]
 
 
 class LandmarkSmoother:
@@ -120,7 +127,8 @@ class BicepAnalyzer(BaseAnalyzer):
             if self.stage == Stage.UP:
                 duration = time.time() - self.rep_start_time
                 if duration < TEMPO_MIN_SECONDS:
-                    self._add_fault("Too fast — control the negative", severity=25)
+                    self._add_fault(_FAULTS["tempo"]["message"],
+                                    severity=_FAULTS["tempo"]["severity"])
                 rep = self._complete_rep()
                 self._reset_rep_tracking()
                 self.stage      = Stage.DOWN
@@ -142,13 +150,16 @@ class BicepAnalyzer(BaseAnalyzer):
             # Only flag once per rep to avoid spamming the quality score
             if drift > DRIFT_TOLERANCE_BODY and "drift" not in self._fault_seen:
                 self._fault_seen.add("drift")
-                self._add_fault("Elbow drifting forward", severity=20)
+                self._add_fault(_FAULTS["drift"]["message"],
+                                severity=_FAULTS["drift"]["severity"])
                 self.feedback = "Pin elbow to your side"
 
-            # Torso swing — 25° tolerance (real human micro-sway is ≤15°)
-            elif torso_lean > 25.0 and "torso" not in self._fault_seen:
+            # Torso swing — tolerance is wider than the angle band because real
+            # human micro-sway is ≤15°
+            elif torso_lean > TORSO_TOLERANCE_DEG and "torso" not in self._fault_seen:
                 self._fault_seen.add("torso")
-                self._add_fault("Torso swinging", severity=15)
+                self._add_fault(_FAULTS["torso"]["message"],
+                                severity=_FAULTS["torso"]["severity"])
                 self.feedback = "Keep torso still — no swinging"
 
             elif self.stage == Stage.UP and not self._fault_seen:

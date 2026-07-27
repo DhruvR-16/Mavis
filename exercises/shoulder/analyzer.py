@@ -12,17 +12,23 @@ from analyzer.base_analyzer import (
     BaseAnalyzer, Stage, CalibrationState,
     ANGLE_TOLERANCE_DEG, SYMMETRY_TOLERANCE, TEMPO_MIN_SECONDS
 )
+from analyzer.exercise_config import exercise
 from analyzer.feature_extractor import FeatureExtractor, get_visibility_map, LM
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-PRESS_TOP_IDEAL    = 165.0   # near-full lockout at top
-PRESS_BOTTOM_IDEAL = 75.0    # elbows below shoulder height at bottom
+# All sourced from exercises.json — see analyzer/exercise_config.py.
+_CFG = exercise("shoulder")
+
+PRESS_TOP_IDEAL    = _CFG["thresholds"]["up"]     # near-full lockout at top
+PRESS_BOTTOM_IDEAL = _CFG["thresholds"]["down"]   # elbows below shoulder height at bottom
 
 # Quality weights
-QUALITY_WEIGHT_LOCKOUT   = 35
-QUALITY_WEIGHT_DEPTH     = 30
-QUALITY_WEIGHT_SYMMETRY  = 20
-QUALITY_WEIGHT_TEMPO     = 15
+QUALITY_WEIGHT_LOCKOUT  = _CFG["scoring"]["lockout"]
+QUALITY_WEIGHT_DEPTH    = _CFG["scoring"]["depth"]
+QUALITY_WEIGHT_SYMMETRY = _CFG["scoring"]["symmetry"]
+QUALITY_WEIGHT_TEMPO    = _CFG["scoring"]["tempo"]
+
+_FAULTS = _CFG["faults"]
 
 
 class LandmarkSmoother:
@@ -99,7 +105,8 @@ class ShoulderAnalyzer(BaseAnalyzer):
             if self.stage == Stage.UP:
                 duration = time.time() - self.rep_start_time
                 if duration < TEMPO_MIN_SECONDS:
-                    self._add_fault("Too fast — control the descent", severity=20)
+                    self._add_fault(_FAULTS["tempo"]["message"],
+                                    severity=_FAULTS["tempo"]["severity"])
                 rep = self._complete_rep()
                 self._reset_rep_tracking()
                 self.stage      = Stage.DOWN
@@ -120,7 +127,8 @@ class ShoulderAnalyzer(BaseAnalyzer):
             if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
                     and "asym" not in self._fault_seen:
                 self._fault_seen.add("asym")
-                self._add_fault("Uneven press — balance both arms", severity=20)
+                self._add_fault(_FAULTS["symmetry"]["message"],
+                                severity=_FAULTS["symmetry"]["severity"])
                 self.feedback = "Left-right imbalance — press evenly"
             elif not self._fault_seen:
                 self.feedback = "Lower with control"
@@ -133,7 +141,8 @@ class ShoulderAnalyzer(BaseAnalyzer):
                 if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
                         and "asym" not in self._fault_seen:
                     self._fault_seen.add("asym")
-                    self._add_fault("Uneven press", severity=15)
+                    self._add_fault(_FAULTS["symmetryMidRange"]["message"],
+                                    severity=_FAULTS["symmetryMidRange"]["severity"])
                     self.feedback = "Even out both arms"
                 else:
                     self.feedback = "Lower slowly"
