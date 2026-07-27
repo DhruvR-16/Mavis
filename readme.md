@@ -99,17 +99,23 @@ python run.py shoulder --sets 4 --reps 8 --rest 90   # program mode
 Press **`q`** to quit the OpenCV window.
 
 > TensorFlow is **not** required and is intentionally absent from
-> `requirements.txt`. The analyzers detect its absence and run in geometry-only
-> mode, which is the supported path.
+> `requirements.txt`. The analyzers are geometry-only — there is no model
+> loading or AI classification step at runtime.
 
-### 4. Retraining the models (optional)
+### 4. Training tooling (not currently useful — see below)
 
 ```bash
 pip install -r requirements-train.txt
 python tools/train_bicep_lstm.py
 ```
 
-Reads `exercises/bicep/data/bicep_angles.csv` and writes to `exercises/bicep/models/`.
+Reads `exercises/bicep/data/bicep_angles.csv` and would write to
+`exercises/bicep/models/`, but the checked-in CSV has only one label
+(`Bicep Curl`), so the script now refuses to save a model — training a
+classifier on one class produces a model that always predicts that class,
+which is not a classifier. Nothing in the app loads this model's output
+regardless. The script is kept for whoever captures real multi-class data
+later; see [Known Issues](#-known-issues).
 
 ---
 
@@ -129,19 +135,17 @@ Reads `exercises/bicep/data/bicep_angles.csv` and writes to `exercises/bicep/mod
 
 This project is pre-1.0 and these are tracked, not hidden:
 
-- **The bundled bicep classifier is non-functional.** It was trained on a single-class
-  dataset (every row labeled `Bicep Curl`), so it always predicts that one class at
-  100% confidence. Its input features also do not match the ones the scaler was fit
-  on. It is slated for removal — the geometric engine above is what actually works.
-- **Shoulder-press lockout and depth scoring is inactive in the web app**, so shoulder
-  reps score higher than they should.
+- **There is no AI exercise classifier.** One existed briefly but was removed: it was
+  trained on a single-class dataset (every row labeled `Bicep Curl`), so it always
+  predicted that one class at 100% confidence regardless of input — indistinguishable
+  from not running at all, at the cost of a `model.predict()` call every frame. Both
+  analyzers are geometric-only now. `tools/train_bicep_lstm.py` remains for anyone who
+  captures real multi-class data.
 - **Calibration does not verify you are holding still** — it waits 3 seconds and
   snapshots whatever pose you are in.
 - **Desktop bicep analysis tracks the left arm only.**
 - **Session history is not persisted** beyond the single most recent session
   (`localStorage`).
-- The web app currently uses MediaPipe's deprecated legacy Solutions API and loads
-  it from an unpinned CDN path.
 
 ---
 
@@ -153,9 +157,9 @@ analyzer/                 Shared desktop engine
   base_analyzer.py          Program mode, scoring, calibration, voice queue
   feature_extractor.py      Landmark → geometric feature vector
 exercises/
-  bicep/analyzer.py         Bicep curl state machine + models/
-  shoulder/analyzer.py      Shoulder press state machine + models/
-tools/train_bicep_lstm.py Model training
+  bicep/analyzer.py         Bicep curl state machine (geometric only)
+  shoulder/analyzer.py      Shoulder press state machine (geometric only)
+tools/train_bicep_lstm.py Classifier training — not currently useful, see Known Issues
 frontend/                 React web app (self-contained)
   src/pages/Workout.tsx     Live session: pose loop, scoring, UI
   src/pages/Home.tsx        Exercise and program selection

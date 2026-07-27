@@ -8,29 +8,15 @@ Form thresholds use ±ANGLE_TOLERANCE_DEG bands so real human error
 
 import cv2
 import mediapipe as mp
-import numpy as np
-import pickle
-import os
 import time
-from collections import deque
 
 from analyzer.base_analyzer import BaseAnalyzer, Stage, CalibrationState, ANGLE_TOLERANCE_DEG, DRIFT_TOLERANCE_BODY, TEMPO_MIN_SECONDS
 from analyzer.feature_extractor import FeatureExtractor, get_visibility_map, LM
-
-try:
-    import tensorflow as tf
-    _TF_AVAILABLE = True
-except ImportError:
-    _TF_AVAILABLE = False
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 # Core angles — tolerance band of ±ANGLE_TOLERANCE_DEG is applied at check time
 UP_ANGLE_IDEAL   = 45.0    # full peak contraction
 DOWN_ANGLE_IDEAL = 160.0   # full extension
-
-SEQUENCE_LENGTH       = 30
-CONFIDENCE_THRESHOLD  = 0.7
-MODELS_DIR            = os.path.join(os.path.dirname(__file__), 'models')
 
 # Rep quality scoring weights (must sum to 100)
 QUALITY_WEIGHT_RANGE    = 40   # did they hit full ROM?
@@ -80,64 +66,12 @@ class BicepAnalyzer(BaseAnalyzer):
         self.extractor  = FeatureExtractor()
         self.smoother   = LandmarkSmoother(alpha=0.55)
 
-        # AI classification
-        self.lstm_model    = None
-        self.scaler        = None
-        self.label_encoder = None
-        self.seq_buffer    = deque(maxlen=SEQUENCE_LENGTH)
-        self.ai_label      = "Waiting..."
-        self.ai_confidence = 0.0
-
         # Per-rep tracking
         self._peak_angle_this_rep  = 180.0   # lowest angle reached (best contraction)
         self._bottom_angle_this_rep = 0.0    # highest angle reached (best extension)
         self._max_drift_this_rep   = 0.0
         self._max_torso_lean_this_rep = 0.0
         self._fault_seen: set = set()        # tracks which faults already fired this rep
-
-        self._load_models()
-
-    # ── Model loading ─────────────────────────────────────────────────────────
-
-    def _load_models(self) -> None:
-        if not _TF_AVAILABLE:
-            print("[BicepAnalyzer] TensorFlow not available — geometry-only mode.")
-            return
-        try:
-            model_path = os.path.join(MODELS_DIR, 'bicep_lstm.h5')
-            scaler_path = os.path.join(MODELS_DIR, 'scaler.pkl')
-            le_path     = os.path.join(MODELS_DIR, 'label_encoder.pkl')
-
-            self.lstm_model    = tf.keras.models.load_model(model_path)
-            with open(scaler_path, 'rb') as f:
-                self.scaler = pickle.load(f)
-            with open(le_path, 'rb') as f:
-                self.label_encoder = pickle.load(f)
-            print("[BicepAnalyzer] Models loaded.")
-        except Exception as e:
-            print(f"[BicepAnalyzer] Model load failed: {e} — geometry-only mode.")
-
-    # ── AI prediction ─────────────────────────────────────────────────────────
-
-    def _predict(self, features: list) -> str:
-        if self.lstm_model is None or self.scaler is None:
-            return "Bicep Curl"
-
-        scaled = self.scaler.transform([features])[0]
-        self.seq_buffer.append(scaled)
-
-        if len(self.seq_buffer) < SEQUENCE_LENGTH:
-            return "Waiting..."
-
-        seq  = np.array(self.seq_buffer)[np.newaxis, ...]
-        pred = self.lstm_model.predict(seq, verbose=0)[0]
-        idx  = int(np.argmax(pred))
-        self.ai_confidence = float(pred[idx])
-
-        if self.ai_confidence < CONFIDENCE_THRESHOLD:
-            return "Unknown"
-
-        return self.label_encoder.inverse_transform([idx])[0]
 
     # ── Form analysis ─────────────────────────────────────────────────────────
 
@@ -290,15 +224,9 @@ class BicepAnalyzer(BaseAnalyzer):
                         if self.resting:
                             self.tick_rest()
                         else:
-                            # ── Feature extraction & AI ───────────────────────
-                            features   = self.extractor.get_features(lms)
-                            self.ai_label = self._predict(features)
-
-                            if self.ai_label in ("Bicep Curl", "Waiting...", "Unknown") or self.lstm_model is None:
-                                self.analyze_form(features, lms)
-                            else:
-                                self.feedback   = "Wrong exercise detected"
-                                self.form_color = (0, 60, 255)
+                            # ── Feature extraction ────────────────────────────
+                            features = self.extractor.get_features(lms)
+                            self.analyze_form(features, lms)
 
                     # ── Draw skeleton ─────────────────────────────────────────
                     self.mp_drawing.draw_landmarks(
@@ -345,9 +273,6 @@ class BicepAnalyzer(BaseAnalyzer):
         # Visibility warning
         if self.visibility_warn:
             cv2.putText(image, f"⚠ {self.visibility_warn}", (12, h - 65), font, 0.6, yellow, 2)
-
-        # AI confidence
-        cv2.putText(image, f"AI: {self.ai_confidence:.2f}", (w - 120, 58), font, 0.5, (180, 180, 180), 1)
 
     def _print_summary(self) -> None:
         summary = self.get_session_summary()

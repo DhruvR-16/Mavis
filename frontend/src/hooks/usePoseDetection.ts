@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { PoseLandmarker, FilesetResolver, DrawingUtils } from '@mediapipe/tasks-vision';
+import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 export interface PoseLandmark {
   x: number;
@@ -12,26 +12,31 @@ interface UsePoseDetectionOptions {
   onResults: (worldLandmarks: PoseLandmark[], normalizedLandmarks: PoseLandmark[]) => void;
 }
 
+// Pinned to the npm-installed @mediapipe/tasks-vision version (see package.json)
+// so a jsDelivr publish can't change production behavior under us.
+const TASKS_VISION_VERSION = '0.10.32';
+const WASM_BASE_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+const MODEL_ASSET_PATH = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+
+// Rendering is the caller's responsibility — this hook only detects.
 export function usePoseDetection({ onResults }: UsePoseDetectionOptions) {
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(-1);
   const isActiveRef = useRef(false);
   const onResultsRef = useRef(onResults);
-  // eslint-disable-next-line react-compiler/react-compiler
-  onResultsRef.current = onResults;
+  useEffect(() => {
+    onResultsRef.current = onResults;
+  });
 
   // Initialize PoseLandmarker
   const init = useCallback(async () => {
-    const vision = await FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-    );
+    const vision = await FilesetResolver.forVisionTasks(WASM_BASE_URL);
     landmarkerRef.current = await PoseLandmarker.createFromOptions(vision, {
       baseOptions: {
-        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',
+        modelAssetPath: MODEL_ASSET_PATH,
         delegate: 'GPU',
       },
       runningMode: 'VIDEO',
@@ -45,60 +50,37 @@ export function usePoseDetection({ onResults }: UsePoseDetectionOptions) {
 
   // Detection loop — defined as a ref to avoid dependency issues
   const detectLoopRef = useRef<(() => void) | undefined>(undefined);
-  // eslint-disable-next-line react-compiler/react-compiler
-  detectLoopRef.current = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const landmarker = landmarkerRef.current;
+  useEffect(() => {
+    detectLoopRef.current = () => {
+      const video = videoRef.current;
+      const landmarker = landmarkerRef.current;
 
-    if (!video || !canvas || !landmarker || !isActiveRef.current) return;
+      if (!video || !landmarker || !isActiveRef.current) return;
 
-    if (video.readyState >= 2 && video.videoWidth > 0) {
-      const now = performance.now();
-      if (video.currentTime !== lastTimeRef.current) {
-        lastTimeRef.current = video.currentTime;
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        const now = performance.now();
+        if (video.currentTime !== lastTimeRef.current) {
+          lastTimeRef.current = video.currentTime;
 
-        const result = landmarker.detectForVideo(video, now);
+          const result = landmarker.detectForVideo(video, now);
 
-        if (result.landmarks && result.landmarks.length > 0 && result.worldLandmarks && result.worldLandmarks.length > 0) {
-          const normalizedLandmarks = result.landmarks[0] as PoseLandmark[];
-          const worldLandmarks = result.worldLandmarks[0] as PoseLandmark[];
-          onResultsRef.current(worldLandmarks, normalizedLandmarks);
-
-          // Draw skeleton on canvas
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            const drawingUtils = new DrawingUtils(ctx);
-            const landmarks = normalizedLandmarks.map(l => ({
-              x: l.x, y: l.y, z: l.z, visibility: l.visibility ?? 0,
-            }));
-            drawingUtils.drawLandmarks(landmarks, {
-              radius: (data) => {
-                return (data.from?.visibility ?? 0) > 0.5 ? 4 : 2;
-              },
-              color: 'rgba(255,255,255,0.8)',
-              fillColor: 'rgba(255,255,255,0.6)',
-            });
-            drawingUtils.drawConnectors(
-              landmarks,
-              PoseLandmarker.POSE_CONNECTIONS,
-              { color: 'rgba(255,255,255,0.5)', lineWidth: 2 }
-            );
+          if (result.landmarks && result.landmarks.length > 0 && result.worldLandmarks && result.worldLandmarks.length > 0) {
+            const normalizedLandmarks = result.landmarks[0] as PoseLandmark[];
+            const worldLandmarks = result.worldLandmarks[0] as PoseLandmark[];
+            onResultsRef.current(worldLandmarks, normalizedLandmarks);
           }
         }
       }
-    }
 
-    rafRef.current = requestAnimationFrame(() => detectLoopRef.current?.());
-  };
+      rafRef.current = requestAnimationFrame(() => detectLoopRef.current?.());
+    };
+  });
 
-  // Start camera
-  const startCamera = useCallback(async (video: HTMLVideoElement, canvas: HTMLCanvasElement) => {
+  // Start camera. Returns false (without throwing) on permission denial or
+  // any other getUserMedia failure, so the caller can keep its own
+  // "enable camera" UI visible instead of assuming success.
+  const startCamera = useCallback(async (video: HTMLVideoElement) => {
     videoRef.current = video;
-    canvasRef.current = canvas;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -131,8 +113,8 @@ export function usePoseDetection({ onResults }: UsePoseDetectionOptions) {
 
   // Resume camera
   const resumeCamera = useCallback(async () => {
-    if (videoRef.current && canvasRef.current) {
-      return startCamera(videoRef.current, canvasRef.current);
+    if (videoRef.current) {
+      return startCamera(videoRef.current);
     }
     return false;
   }, [startCamera]);

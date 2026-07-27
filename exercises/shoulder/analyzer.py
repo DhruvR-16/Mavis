@@ -6,7 +6,6 @@ Inherits all program mode, quality scoring, calibration from BaseAnalyzer.
 
 import cv2
 import mediapipe as mp
-import numpy as np
 import time
 
 from analyzer.base_analyzer import (
@@ -14,12 +13,6 @@ from analyzer.base_analyzer import (
     ANGLE_TOLERANCE_DEG, SYMMETRY_TOLERANCE, TEMPO_MIN_SECONDS
 )
 from analyzer.feature_extractor import FeatureExtractor, get_visibility_map, LM
-
-try:
-    import tensorflow as tf
-    _TF_AVAILABLE = True
-except ImportError:
-    _TF_AVAILABLE = False
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 PRESS_TOP_IDEAL    = 165.0   # near-full lockout at top

@@ -113,7 +113,11 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0;
+  /* Mirrored so the view matches a mirror; #pose-canvas draws its skeleton
+     overlay on top and flips landmark x-coordinates to match (see
+     Workout.tsx's drawSkeleton — MediaPipe coordinates are always relative
+     to the unmirrored source frame regardless of on-screen presentation). */
+  transform: scaleX(-1);
 }
 
 #pose-canvas {

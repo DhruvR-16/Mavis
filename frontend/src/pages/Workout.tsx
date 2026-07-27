@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Chart } from 'chart.js/auto';
-import '@mediapipe/camera_utils';
-import '@mediapipe/pose';
+import { usePoseDetection, type PoseLandmark } from '../hooks/usePoseDetection';
 import './Workout.css';
 
 type Landmark = {
@@ -61,7 +60,14 @@ const TOLERANCE = 15;
 const DRIFT_TOL = 0.18;
 const MIN_TEMPO_MS = 800;
 
-const initialState = (): SessionState => ({
+// peakAngle/bottomAngle track opposite extremes depending on exercise: bicep
+// tracks a MIN (deepest contraction) and a MAX (fullest extension) of the
+// elbow angle, so the trackers must start at the opposite ends (180/0).
+// Shoulder press tracks a MAX (lockout) and a MIN (depth) of the same pair,
+// so it needs the reverse starting values — get this backwards and
+// Math.max/min against the wrong bound never fires, silently disabling
+// lockout/depth scoring.
+const initialState = (isBicep: boolean): SessionState => ({
   reps: 0,
   goodReps: 0,
   badReps: 0,
@@ -74,8 +80,8 @@ const initialState = (): SessionState => ({
   repStartTime: 0,
   repFaults: [],
   repQualityLive: 100,
-  peakAngle: 180,
-  bottomAngle: 0,
+  peakAngle: isBicep ? 180 : 0,
+  bottomAngle: isBicep ? 0 : 180,
   maxDrift: 0,
   maxLean: 0,
   currentSet: 1,
@@ -126,7 +132,7 @@ export default function Workout() {
     [IS_BICEP],
   );
 
-  const [state, setState] = useState<SessionState>(initialState);
+  const [state, setState] = useState<SessionState>(() => initialState(IS_BICEP));
   const stateRef = useRef<SessionState>(state);
   const [sessionTimer, setSessionTimer] = useState('00:00');
   const [feedback, setFeedbackState] = useState<{ text: string; type: 'good' | 'bad' | 'info' }>({ text: 'Ready', type: 'info' });
@@ -154,8 +160,6 @@ export default function Workout() {
   const qualityChartRef = useRef<Chart | null>(null);
   const summaryChartRef = useRef<Chart | null>(null);
 
-  const poseRef = useRef<{ send: (input: { image: HTMLVideoElement }) => Promise<void> } | null>(null);
-  const cameraRef = useRef<{ start: () => Promise<void>; stop: () => void } | null>(null);
   const restRafRef = useRef<number | null>(null);
   const lowVisCounterRef = useRef(0);
 
@@ -232,8 +236,8 @@ export default function Workout() {
       repStartTime: Date.now(),
       repFaults: [],
       repQualityLive: 100,
-      peakAngle: 180,
-      bottomAngle: 0,
+      peakAngle: IS_BICEP ? 180 : 0,
+      bottomAngle: IS_BICEP ? 0 : 180,
       maxDrift: 0,
       maxLean: 0,
     }));
@@ -393,8 +397,8 @@ export default function Workout() {
         repLog: [...prev.repLog, rep],
         repFaults: [],
         repQualityLive: 100,
-        peakAngle: 180,
-        bottomAngle: 0,
+        peakAngle: IS_BICEP ? 180 : 0,
+        bottomAngle: IS_BICEP ? 0 : 180,
         maxDrift: 0,
         maxLean: 0,
       };
@@ -559,7 +563,7 @@ export default function Workout() {
     ctx.globalAlpha = 1;
   };
 
-  const onPoseResults = (results: { image: CanvasImageSource; poseLandmarks?: unknown }) => {
+  const onPoseResults = (_worldLandmarks: PoseLandmark[], normalizedLandmarks: PoseLandmark[]) => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
@@ -567,16 +571,14 @@ export default function Workout() {
 
     canvas.width = video.videoWidth || canvas.offsetWidth;
     canvas.height = video.videoHeight || canvas.offsetHeight;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    ctx.translate(canvas.width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
 
-    if (!results.poseLandmarks) return;
-    const lms = results.poseLandmarks as Landmark[];
+    // <video> is mirrored via CSS (see Workout.css); landmark coordinates are
+    // relative to the unmirrored source frame regardless of on-screen
+    // presentation, so drawSkeleton's manual x-flip below is still correct.
+    const lms: Landmark[] = normalizedLandmarks.map((l) => ({
+      x: l.x, y: l.y, z: l.z, visibility: l.visibility ?? 0,
+    }));
 
     if (!stateRef.current.calibrated) {
       const snapshot = stateRef.current;
@@ -618,51 +620,32 @@ export default function Workout() {
     drawSkeleton(lms, stateRef.current.repQualityLive > 60 ? ACCENT : '#f87171');
   };
 
+  const poseDetection = usePoseDetection({ onResults: onPoseResults });
+
   const startCamera = async () => {
     const video = videoRef.current;
     if (!video) return;
 
-    setCamPermissionVisible(false);
-    setCalibVisible(true);
+    // Reuse the existing landmarker across restarts instead of rebuilding
+    // the whole detection graph every time — init() loads the wasm runtime
+    // and model and only needs to run once per page load, not once per
+    // session (the legacy MediaPipe Solutions setup used to reconstruct
+    // everything on every restart, leaking a graph each time).
+    const initPromise = poseDetection.landmarkerRef.current
+      ? Promise.resolve()
+      : poseDetection.init();
+    const [ok] = await Promise.all([poseDetection.startCamera(video), initPromise]);
 
-    const PoseCtor = (window as unknown as { Pose: new (options: { locateFile: (file: string) => string }) => {
-      setOptions: (options: Record<string, unknown>) => void;
-      onResults: (cb: (results: { image: CanvasImageSource; poseLandmarks?: unknown }) => void) => void;
-      send: (input: { image: HTMLVideoElement }) => Promise<void>;
-    } }).Pose;
-    const CameraCtor = (window as unknown as { Camera: new (video: HTMLVideoElement, options: {
-      onFrame: () => Promise<void>;
-      width: number;
-      height: number;
-    }) => { start: () => Promise<void>; stop: () => void } }).Camera;
-
-    const pose = new PoseCtor({ locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
-    pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      enableSegmentation: false,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-
-    pose.onResults(onPoseResults);
-    poseRef.current = pose;
-
-    const camera = new CameraCtor(video, {
-      onFrame: async () => {
-        if (!poseRef.current || !videoRef.current) return;
-        await poseRef.current.send({ image: videoRef.current });
-      },
-      width: 1280,
-      height: 720,
-    });
-
-    cameraRef.current = camera;
-    await camera.start();
+    if (ok) {
+      setCamPermissionVisible(false);
+      setCalibVisible(true);
+    }
+    // else: leave the permission prompt visible so the user can retry —
+    // don't hide it before we know the camera actually started.
   };
 
   const endSession = () => {
-    cameraRef.current?.stop();
+    poseDetection.stopCamera();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     const qualities = stateRef.current.repQualities;
@@ -697,7 +680,7 @@ export default function Workout() {
   };
 
   const resetFullSession = () => {
-    const fresh = initialState();
+    const fresh = initialState(IS_BICEP);
     setState(fresh);
     stateRef.current = fresh;
     setFeedbackState({ text: 'Ready', type: 'info' });
@@ -765,7 +748,7 @@ export default function Workout() {
       window.clearInterval(timerId);
       window.clearTimeout(boot);
       if (restRafRef.current) cancelAnimationFrame(restRafRef.current);
-      cameraRef.current?.stop();
+      poseDetection.stopCamera();
       qualityChartRef.current?.destroy();
       summaryChartRef.current?.destroy();
       if (window.speechSynthesis) window.speechSynthesis.cancel();

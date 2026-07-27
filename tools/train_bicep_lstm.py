@@ -1,3 +1,15 @@
+"""
+Trains an LSTM sequence classifier over exercises/bicep/data/bicep_angles.csv.
+
+NOT currently wired into the app. exercises/bicep/analyzer.py runs on
+geometric thresholds only — the AI-classification path was removed because
+the checked-in bicep_angles.csv has exactly one label ("Bicep Curl"), so any
+model trained on it degenerates to a constant-output classifier: useful for
+nothing. This script is kept for whoever captures a real multi-class dataset
+(distinct labels per exercise, plus negative/other-movement examples) and
+wants to wire classification back in — see readme.md's Known Issues section.
+"""
+
 import pandas as pd
 import numpy as np
 import os
@@ -71,6 +83,11 @@ def train_model():
     print(f"Input Shape: {X.shape}")
     
     num_classes = len(np.unique(y_encoded))
+    if num_classes < 2:
+        print(f"Error: dataset has only {num_classes} class ({le.classes_}) — "
+              "a classifier needs at least 2 to learn anything. Aborting "
+              "rather than saving a model that always predicts the same label.")
+        return
     y_cat = keras.utils.to_categorical(y, num_classes=num_classes)
     
     X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, random_state=42)
