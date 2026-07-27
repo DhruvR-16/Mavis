@@ -172,6 +172,15 @@
   line-height: 1.5;
 }
 
+.cam-error {
+  font-size: 13px;
+  color: var(--danger);
+  text-align: center;
+  max-width: 320px;
+  line-height: 1.5;
+  margin-top: -8px;
+}
+
 .cam-btn {
   margin-top: 8px;
   background: var(--accent-ex);

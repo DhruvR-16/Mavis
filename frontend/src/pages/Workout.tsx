@@ -28,6 +28,7 @@ type SessionState = {
   goodReps: number;
   badReps: number;
   stage: 'down' | 'up';
+  activeSide: 'left' | 'right';
   calibrated: boolean;
   calibStart: number;
   calib: {
@@ -60,6 +61,13 @@ const TOLERANCE = 15;
 const DRIFT_TOL = 0.18;
 const MIN_TEMPO_MS = 800;
 
+// Calibration must be held genuinely still: if these key points move more
+// than this (normalised coordinate units) between frames, the countdown
+// restarts rather than completing against whatever pose is held at the
+// deadline (e.g. mid-curl).
+const CALIB_STABILITY_TOL = 0.03;
+const CALIB_KEY_POINTS = [11, 12, 13, 14, 15, 16];
+
 // peakAngle/bottomAngle track opposite extremes depending on exercise: bicep
 // tracks a MIN (deepest contraction) and a MAX (fullest extension) of the
 // elbow angle, so the trackers must start at the opposite ends (180/0).
@@ -72,6 +80,7 @@ const initialState = (isBicep: boolean): SessionState => ({
   goodReps: 0,
   badReps: 0,
   stage: 'down',
+  activeSide: 'left',
   calibrated: false,
   calibStart: 0,
   calib: { shoulderWidth: 0.2, leftElbowAnchorX: 0.5, rightElbowAnchorX: 0.5 },
@@ -138,6 +147,7 @@ export default function Workout() {
   const [feedback, setFeedbackState] = useState<{ text: string; type: 'good' | 'bad' | 'info' }>({ text: 'Ready', type: 'info' });
   const [calibProgress, setCalibProgress] = useState({ width: 0, text: 'Hold still for 3 seconds' });
   const [camPermissionVisible, setCamPermissionVisible] = useState(true);
+  const [camError, setCamError] = useState('');
   const [calibVisible, setCalibVisible] = useState(false);
   const [warningText, setWarningText] = useState('');
   const [showWarning, setShowWarning] = useState(false);
@@ -162,6 +172,7 @@ export default function Workout() {
 
   const restRafRef = useRef<number | null>(null);
   const lowVisCounterRef = useRef(0);
+  const calibRefPointsRef = useRef<{ x: number; y: number }[] | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -174,6 +185,18 @@ export default function Workout() {
       stateRef.current = next;
       return next;
     });
+  };
+
+  // Mutates stateRef.current directly, WITHOUT going through React setState.
+  // Use this for fields nothing in JSX reads directly — the pose callback
+  // runs at 30-60Hz, and routing every per-frame update through setState
+  // re-renders the whole tree (chart, rep log, sidebar) every frame.
+  // completeRep/updateProgramAfterRep still use updateState above, because
+  // their fields (reps, currentSet, repLog, ...) genuinely drive the UI —
+  // and they only fire once per rep, not once per frame, so there's no
+  // storm to fix there.
+  const mutateRef = (patch: Partial<SessionState>) => {
+    Object.assign(stateRef.current, patch);
   };
 
   const speak = (text: string, priority = false) => {
@@ -191,7 +214,7 @@ export default function Workout() {
     utter.volume = 0.9;
     window.speechSynthesis.speak(utter);
 
-    updateState((prev) => ({ ...prev, lastVoiceTime: now }));
+    mutateRef({ lastVoiceTime: now });
   };
 
   const setFeedback = (text: string, type: 'good' | 'bad' | 'info') => {
@@ -199,7 +222,7 @@ export default function Workout() {
     if (snapshot.lastFeedback === text) return;
 
     setFeedbackState({ text, type });
-    updateState((prev) => ({ ...prev, lastFeedback: text }));
+    mutateRef({ lastFeedback: text });
   };
 
   const updateQualityChart = (quality: number) => {
@@ -220,19 +243,21 @@ export default function Workout() {
   };
 
   const addFault = (text: string, severity: number) => {
-    updateState((prev) => {
-      const faults = prev.repFaults.includes(text) ? prev.repFaults : [...prev.repFaults, text];
-      return {
-        ...prev,
-        repFaults: faults,
-        repQualityLive: Math.max(0, prev.repQualityLive - severity),
-      };
+    const s = stateRef.current;
+    // Only deduct once per rep — the caller re-checks the fault condition
+    // every frame while it holds, and without this gate a sustained fault
+    // (e.g. elbow drifted for half a second) deducted severity on every one
+    // of those frames instead of once, crashing the live score to 0 almost
+    // instantly. Matches the Python engine's _fault_seen design.
+    if (s.repFaults.includes(text)) return;
+    mutateRef({
+      repFaults: [...s.repFaults, text],
+      repQualityLive: Math.max(0, s.repQualityLive - severity),
     });
   };
 
   const beginRep = () => {
-    updateState((prev) => ({
-      ...prev,
+    mutateRef({
       repStartTime: Date.now(),
       repFaults: [],
       repQualityLive: 100,
@@ -240,7 +265,7 @@ export default function Workout() {
       bottomAngle: IS_BICEP ? 0 : 180,
       maxDrift: 0,
       maxLean: 0,
-    }));
+    });
   };
 
   const scoreRep = () => {
@@ -301,7 +326,7 @@ export default function Workout() {
     });
 
     if (remaining <= 0) {
-      updateState((prev) => ({ ...prev, resting: false }));
+      mutateRef({ resting: false });
       setRestUi((prev) => ({ ...prev, show: false }));
       setFeedback(`Set ${stateRef.current.currentSet} - ${REPS} reps`, 'info');
       speak(`Rest over. Start set ${stateRef.current.currentSet}.`, true);
@@ -312,7 +337,7 @@ export default function Workout() {
   };
 
   const startRest = () => {
-    updateState((prev) => ({ ...prev, resting: true, restStart: Date.now() }));
+    mutateRef({ resting: true, restStart: Date.now() });
     setRestUi((prev) => ({ ...prev, show: true }));
     speak(`Set complete. Rest for ${REST} seconds.`, true);
     restRafRef.current = requestAnimationFrame(animateRest);
@@ -383,12 +408,20 @@ export default function Workout() {
 
   const completeRep = () => {
     const quality = Math.min(scoreRep(), stateRef.current.repQualityLive);
+    // Built inside the updater below, where prev.repFaults still holds this
+    // rep's faults (the same updater resets repFaults to [] for the next
+    // rep) and nextReps is the correct just-completed rep number. Reusing
+    // this object for updateProgramAfterRep avoids reconstructing it from
+    // stateRef.current afterward, which previously read post-reset values —
+    // repFaults was already [], and reps had already been incremented, so
+    // the reconstructed rep silently had the wrong number and no faults.
+    let rep: RepLogItem | null = null;
 
     updateState((prev) => {
       const nextReps = prev.reps + 1;
       const isGood = quality >= 60;
-      const rep: RepLogItem = { n: nextReps, quality, faults: [...prev.repFaults] };
-      const next = {
+      rep = { n: nextReps, quality, faults: [...prev.repFaults] };
+      return {
         ...prev,
         reps: nextReps,
         goodReps: prev.goodReps + (isGood ? 1 : 0),
@@ -402,13 +435,11 @@ export default function Workout() {
         maxDrift: 0,
         maxLean: 0,
       };
-
-      return next;
     });
 
     updateQualityChart(quality);
     voiceForRep(quality);
-    updateProgramAfterRep({ n: stateRef.current.reps + 1, quality, faults: [...stateRef.current.repFaults] });
+    if (rep) updateProgramAfterRep(rep);
   };
 
   const analyzeBicep = (lms: Landmark[], sw: number) => {
@@ -417,10 +448,28 @@ export default function Workout() {
     const lw = lms[15];
     const lh = lms[23];
     const rs = lms[12];
+    const re = lms[14];
+    const rw = lms[16];
     const rh = lms[24];
 
-    const elbowAngle = angle3(ls, le, lw);
-    const drift = Math.abs(le.x - stateRef.current.calib.leftElbowAnchorX) / sw;
+    const leftAngle = angle3(ls, le, lw);
+    const rightAngle = angle3(rs, re, rw);
+
+    // Latch which arm is curling while at rest (not mid-rep) — locking it
+    // for the duration of a rep avoids flip-flopping if the two angles
+    // happen to cross due to landmark noise once a curl is underway.
+    // Tracking only the left arm meant curling with the right arm counted
+    // zero reps; calib.rightElbowAnchorX was already captured during
+    // calibration but never consumed until now.
+    if (stateRef.current.stage !== 'up') {
+      mutateRef({ activeSide: leftAngle <= rightAngle ? 'left' : 'right' });
+    }
+    const active = stateRef.current.activeSide;
+    const elbowAngle = active === 'left' ? leftAngle : rightAngle;
+    const elbowX = active === 'left' ? le.x : re.x;
+    const anchorX = active === 'left' ? stateRef.current.calib.leftElbowAnchorX : stateRef.current.calib.rightElbowAnchorX;
+    const drift = Math.abs(elbowX - anchorX) / sw;
+
     const torsoLean =
       Math.abs(
         Math.atan2(
@@ -430,17 +479,17 @@ export default function Workout() {
       ) *
       (180 / Math.PI);
 
-    updateState((prev) => ({
-      ...prev,
-      peakAngle: Math.min(prev.peakAngle, elbowAngle),
-      bottomAngle: Math.max(prev.bottomAngle, elbowAngle),
-      maxDrift: Math.max(prev.maxDrift, drift),
-      maxLean: Math.max(prev.maxLean, torsoLean),
-    }));
+    const s = stateRef.current;
+    mutateRef({
+      peakAngle: Math.min(s.peakAngle, elbowAngle),
+      bottomAngle: Math.max(s.bottomAngle, elbowAngle),
+      maxDrift: Math.max(s.maxDrift, drift),
+      maxLean: Math.max(s.maxLean, torsoLean),
+    });
 
     if (elbowAngle > THRESH.downIdeal - TOLERANCE) {
       if (stateRef.current.stage === 'up') completeRep();
-      updateState((prev) => ({ ...prev, stage: 'down' }));
+      mutateRef({ stage: 'down' });
       if (stateRef.current.reps === 0) setFeedback('Curl up - full range', 'info');
       return;
     }
@@ -448,7 +497,7 @@ export default function Workout() {
     if (elbowAngle < THRESH.upIdeal + TOLERANCE) {
       if (stateRef.current.stage === 'down') {
         beginRep();
-        updateState((prev) => ({ ...prev, stage: 'up' }));
+        mutateRef({ stage: 'up' });
       }
       if (drift > DRIFT_TOL) addFault('Elbow drifting forward', 18);
       if (torsoLean > 20 + TOLERANCE) addFault('Too much torso swing', 15);
@@ -473,16 +522,16 @@ export default function Workout() {
     const avg = (leftA + rightA) / 2;
     const asym = Math.abs(leftA - rightA);
 
-    updateState((prev) => ({
-      ...prev,
-      peakAngle: Math.max(prev.peakAngle, avg),
-      bottomAngle: Math.min(prev.bottomAngle, avg),
-      maxDrift: Math.max(prev.maxDrift, asym),
-    }));
+    const s = stateRef.current;
+    mutateRef({
+      peakAngle: Math.max(s.peakAngle, avg),
+      bottomAngle: Math.min(s.bottomAngle, avg),
+      maxDrift: Math.max(s.maxDrift, asym),
+    });
 
     if (avg < THRESH.downIdeal + TOLERANCE) {
       if (stateRef.current.stage === 'up') completeRep();
-      updateState((prev) => ({ ...prev, stage: 'down' }));
+      mutateRef({ stage: 'down' });
       if (stateRef.current.reps === 0) setFeedback('Press overhead', 'info');
       return;
     }
@@ -490,7 +539,7 @@ export default function Workout() {
     if (avg > THRESH.upIdeal - TOLERANCE) {
       if (stateRef.current.stage === 'down') {
         beginRep();
-        updateState((prev) => ({ ...prev, stage: 'up' }));
+        mutateRef({ stage: 'up' });
       }
       if (asym > THRESH.asym + TOLERANCE) addFault('Arms are uneven', 18);
       setFeedback(stateRef.current.repFaults[0] || 'Lockout overhead', stateRef.current.repFaults.length ? 'bad' : 'good');
@@ -502,7 +551,10 @@ export default function Workout() {
   };
 
   const checkVisibility = (lms: Landmark[]) => {
-    const required = IS_BICEP ? [11, 13, 15] : [11, 12, 13, 14, 15, 16];
+    // Both arms are always required now, even for bicep: active-arm
+    // detection needs to compare both elbow angles to know which one is
+    // curling (see analyzeBicep).
+    const required = [11, 12, 13, 14, 15, 16];
     const occluded = required.filter((i) => (lms[i]?.visibility || 0) < 0.55);
 
     if (occluded.length > 0) lowVisCounterRef.current += 1;
@@ -583,22 +635,38 @@ export default function Workout() {
     if (!stateRef.current.calibrated) {
       const snapshot = stateRef.current;
       if (!snapshot.calibStart) {
-        updateState((prev) => ({ ...prev, calibStart: Date.now() }));
+        mutateRef({ calibStart: Date.now() });
+        calibRefPointsRef.current = null;
       }
+
+      // Require the pose to actually be held still — reset the countdown if
+      // the user moves more than a small amount, instead of calibrating
+      // against whatever pose happens to be held at the 3-second mark (e.g.
+      // mid-curl), which would silently corrupt every drift measurement for
+      // the rest of the session.
+      const keyPoints = CALIB_KEY_POINTS.map((i) => ({ x: lms[i].x, y: lms[i].y }));
+      if (calibRefPointsRef.current) {
+        const moved = keyPoints.some((p, idx) => {
+          const ref = calibRefPointsRef.current![idx];
+          return Math.hypot(p.x - ref.x, p.y - ref.y) > CALIB_STABILITY_TOL;
+        });
+        if (moved) mutateRef({ calibStart: Date.now() });
+      }
+      calibRefPointsRef.current = keyPoints;
+
       const elapsed = Date.now() - (stateRef.current.calibStart || Date.now());
       const pct = Math.min(100, (elapsed / 3000) * 100);
       setCalibProgress({ width: pct, text: `Hold still - ${((3000 - elapsed) / 1000).toFixed(1)}s` });
 
       if (elapsed >= 3000) {
-        updateState((prev) => ({
-          ...prev,
+        mutateRef({
           calibrated: true,
           calib: {
             shoulderWidth: shoulderWidth(lms),
             leftElbowAnchorX: lms[13].x,
             rightElbowAnchorX: lms[14].x,
           },
-        }));
+        });
         setCalibVisible(false);
         setFeedback('Calibrated! Begin when ready.', 'good');
         speak('Calibrated. Begin when you are ready.', true);
@@ -626,6 +694,8 @@ export default function Workout() {
     const video = videoRef.current;
     if (!video) return;
 
+    setCamError('');
+
     // Reuse the existing landmarker across restarts instead of rebuilding
     // the whole detection graph every time — init() loads the wasm runtime
     // and model and only needs to run once per page load, not once per
@@ -639,9 +709,12 @@ export default function Workout() {
     if (ok) {
       setCamPermissionVisible(false);
       setCalibVisible(true);
+    } else {
+      // Leave the permission prompt visible so the user can retry — don't
+      // hide it before we know the camera actually started — but now say
+      // why, instead of silently doing nothing.
+      setCamError('Camera access failed. Check your browser’s site permissions (or that no other app is using the camera) and try again.');
     }
-    // else: leave the permission prompt visible so the user can retry —
-    // don't hide it before we know the camera actually started.
   };
 
   const endSession = () => {
@@ -686,7 +759,9 @@ export default function Workout() {
     setFeedbackState({ text: 'Ready', type: 'info' });
     setWarningText('');
     setShowWarning(false);
+    setCamError('');
     setSessionTimer('00:00');
+    calibRefPointsRef.current = null;
     qualityChartRef.current?.destroy();
     qualityChartRef.current = null;
     if (qualityCanvasRef.current) {
@@ -814,6 +889,7 @@ export default function Workout() {
             <div className="cam-icon">📷</div>
             <h3>Allow camera access</h3>
             <p>We need your webcam to analyze movement and give rep-by-rep feedback.</p>
+            {camError && <p className="cam-error">{camError}</p>}
             <button type="button" className="cam-btn" onClick={() => void startCamera()}>Enable Camera</button>
           </div>
 

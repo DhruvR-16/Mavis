@@ -28,7 +28,7 @@ share code today — see [Known Issues](#-known-issues).
 |---|---|---|
 | Location | `frontend/` | `run.py`, `analyzer/`, `exercises/` |
 | Stack | React 19 + Vite + MediaPipe Tasks | Python + OpenCV + MediaPipe |
-| Voice coaching | ✅ Web Speech API | ❌ (queued but never played) |
+| Voice coaching | ✅ Web Speech API | ❌ (not implemented) |
 | Rep quality chart | ✅ | ❌ (text summary only) |
 | Recommended | **Yes** | For development / model work |
 
@@ -124,10 +124,11 @@ later; see [Known Issues](#-known-issues).
 1. **Input** — webcam frames, mirrored horizontally so the view matches a mirror.
 2. **Pose extraction** — MediaPipe isolates 33 body landmarks per frame.
 3. **Smoothing** — an exponential moving average over landmark positions suppresses jitter.
-4. **Calibration** — a 3-second standing hold captures your shoulder width and neutral elbow position, so all subsequent drift measurements are body-relative rather than pixel-relative.
+4. **Calibration** — a 3-second standing hold captures your shoulder width and neutral elbow position, so all subsequent drift measurements are body-relative rather than pixel-relative. The hold must be genuinely still: movement past a small tolerance restarts the countdown instead of calibrating against whatever pose is held at the deadline.
 5. **Geometric features** — joint angles (elbow, shoulder), torso lean, bilateral symmetry, and normalized elbow drift.
-6. **State machine** — maps the primary joint angle onto `DOWN` → `UP` → `DOWN` transitions to count reps, applying a ±15° tolerance band at each threshold.
-7. **Rep scoring** — each completed rep starts at 100 and is docked for range-of-motion shortfalls, fast tempo, elbow drift, and torso swing. Reps below 60 count as bad.
+6. **Active-arm detection** (bicep curl) — whichever elbow is more contracted while at rest is picked as the working arm and locked for the duration of the rep, so curling with either arm is tracked correctly.
+7. **State machine** — maps the primary joint angle onto `DOWN` → `UP` → `DOWN` transitions to count reps, applying a ±15° tolerance band at each threshold.
+8. **Rep scoring** — each completed rep starts at 100 and is docked for range-of-motion shortfalls, fast tempo, elbow drift, and torso swing. Reps below 60 count as bad.
 
 ---
 
@@ -141,9 +142,6 @@ This project is pre-1.0 and these are tracked, not hidden:
   from not running at all, at the cost of a `model.predict()` call every frame. Both
   analyzers are geometric-only now. `tools/train_bicep_lstm.py` remains for anyone who
   captures real multi-class data.
-- **Calibration does not verify you are holding still** — it waits 3 seconds and
-  snapshots whatever pose you are in.
-- **Desktop bicep analysis tracks the left arm only.**
 - **Session history is not persisted** beyond the single most recent session
   (`localStorage`).
 
@@ -154,7 +152,7 @@ This project is pre-1.0 and these are tracked, not hidden:
 ```
 run.py                    Desktop launcher (CLI)
 analyzer/                 Shared desktop engine
-  base_analyzer.py          Program mode, scoring, calibration, voice queue
+  base_analyzer.py          Program mode, scoring, calibration
   feature_extractor.py      Landmark → geometric feature vector
 exercises/
   bicep/analyzer.py         Bicep curl state machine (geometric only)

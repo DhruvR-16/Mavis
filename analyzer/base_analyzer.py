@@ -6,15 +6,17 @@ Shared logic for all exercise analyzers:
   - Rep quality scoring (0–100) with tolerance bands
   - Session history for the trend graph
   - Landmark visibility warnings
-  - Voice cue queue (spoken by the frontend via Web Speech API)
 
 Every exercise analyzer (BicepAnalyzer, ShoulderAnalyzer, etc.) inherits from this.
 """
 
 import time
+import math
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
+
+from analyzer.feature_extractor import LM
 
 
 # ── Tolerance constants ──────────────────────────────────────────────────────
@@ -25,6 +27,12 @@ DRIFT_TOLERANCE_BODY  = 0.18   # elbow drift: 18% of shoulder-width is fine
 SYMMETRY_TOLERANCE    = 20.0   # bilateral asymmetry below 20° is acceptable
 TEMPO_MIN_SECONDS     = 0.8    # reps faster than this are flagged (not 1.0 – gives wiggle room)
 VISIBILITY_WARN_FRAMES = 12    # frames below visibility threshold before warning fires
+
+# Calibration must be held genuinely still: if key points move more than this
+# (normalised coordinate units) between frames, the countdown restarts rather
+# than completing against whatever pose happens to be held at the deadline.
+CALIB_STABILITY_TOLERANCE = 0.03
+CALIB_KEY_POINTS = ("left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist")
 
 
 class Stage(Enum):
@@ -90,6 +98,7 @@ class BaseAnalyzer:
         self.calib_state      = CalibrationState.NEEDED
         self.calib_countdown  = 3.0     # seconds of stable pose required
         self.calib_start_time = 0.0
+        self._calib_ref_points: Optional[list] = None   # key points from the previous calibration frame
 
         # ── counters ─────────────────────────────────────────────────────────
         self.total_reps   = 0
@@ -122,23 +131,34 @@ class BaseAnalyzer:
         self.visibility_warn:  str  = ""
         self._low_vis_counter: int  = 0
 
-        # ── voice queue ──────────────────────────────────────────────────────
-        # Frontend polls this; items are dicts {"text": str, "priority": bool}
-        self.voice_queue: list[dict] = []
-        self._last_voice_time = 0.0
-        self._voice_cooldown  = 2.5   # seconds between non-priority cues
-
     # ── Calibration ──────────────────────────────────────────────────────────
 
     def start_calibration(self) -> None:
         self.calib_state      = CalibrationState.RUNNING
         self.calib_start_time = time.time()
+        self._calib_ref_points = None
 
     def tick_calibration(self, extractor, landmarks) -> bool:
         """
         Call every frame during calibration phase.
+        Restarts the countdown if the pose moves more than
+        CALIB_STABILITY_TOLERANCE between frames, so calibration can't
+        complete against a pose that was only held for an instant (e.g.
+        mid-curl) rather than genuinely stood still for calib_countdown.
         Returns True when calibration is complete.
         """
+        key_points = [(landmarks[LM[name]].x, landmarks[LM[name]].y) for name in CALIB_KEY_POINTS]
+
+        if self._calib_ref_points is not None:
+            moved = max(
+                math.hypot(kx - rx, ky - ry)
+                for (kx, ky), (rx, ry) in zip(key_points, self._calib_ref_points)
+            )
+            if moved > CALIB_STABILITY_TOLERANCE:
+                self.calib_start_time = time.time()
+
+        self._calib_ref_points = key_points
+
         elapsed = time.time() - self.calib_start_time
         remaining = self.calib_countdown - elapsed
         self.feedback = f"Stand tall — hold still ({remaining:.1f}s)"
@@ -147,7 +167,6 @@ class BaseAnalyzer:
             extractor.calibrate(landmarks)
             self.calib_state = CalibrationState.COMPLETE
             self.feedback    = "Calibrated! Begin when ready."
-            self._enqueue_voice("Calibrated. Begin when you're ready.", priority=True)
             return True
         return False
 
@@ -166,7 +185,6 @@ class BaseAnalyzer:
         self.program_complete   = False
         self.resting            = False
         self.feedback           = f"Set 1 of {sets} — do {reps} reps"
-        self._enqueue_voice(f"Starting set 1. Do {reps} reps.", priority=True)
 
     def _check_program_progress(self, rep: RepResult) -> None:
         """
@@ -187,7 +205,6 @@ class BaseAnalyzer:
         # ── wrong-set detection: too many bad reps mid-set ───────────────────
         if bad_in_set >= p.bad_rep_limit and reps_done < target:
             self.feedback = f"⚠ Too many bad reps — focus on form!"
-            self._enqueue_voice("Too many bad reps. Focus on form.", priority=True)
 
         # ── set complete ──────────────────────────────────────────────────────
         if reps_done >= target:
@@ -205,25 +222,16 @@ class BaseAnalyzer:
             if not set_valid:
                 # Repeat this set
                 self.feedback = f"Set {self.current_set} had too many bad reps — repeat it!"
-                self._enqueue_voice(
-                    f"Set {self.current_set} doesn't count. Too many bad reps. Repeat it.",
-                    priority=True
-                )
             else:
                 # Advance to next set
                 if self.current_set >= p.sets:
                     self.program_complete = True
                     self.feedback = "🏆 Workout complete!"
-                    self._enqueue_voice("Workout complete. Great work!", priority=True)
                 else:
                     self.current_set += 1
                     self.resting          = True
                     self.rest_start_time  = time.time()
                     self.feedback = f"Set done! Rest {p.rest_seconds}s"
-                    self._enqueue_voice(
-                        f"Set complete. Rest for {p.rest_seconds} seconds.",
-                        priority=True
-                    )
 
     def tick_rest(self) -> bool:
         """
@@ -240,10 +248,6 @@ class BaseAnalyzer:
         if remaining <= 0:
             self.resting = False
             self.feedback = f"Set {self.current_set} of {self.program.sets} — {self.program.reps_per_set} reps"
-            self._enqueue_voice(
-                f"Rest over. Start set {self.current_set}.",
-                priority=True
-            )
             return True
         return False
 
@@ -275,15 +279,6 @@ class BaseAnalyzer:
             faults       = list(self.current_faults),
         )
         self.rep_history.append(rep)
-
-        # voice cue
-        if quality >= 85:
-            self._enqueue_voice(f"{self.total_reps}. Great rep!", priority=False)
-        elif quality >= 60:
-            self._enqueue_voice(f"{self.total_reps}.", priority=False)
-        else:
-            fault_str = self.current_faults[0] if self.current_faults else "bad form"
-            self._enqueue_voice(fault_str, priority=True)
 
         if self.program:
             self._check_program_progress(rep)
@@ -327,19 +322,6 @@ class BaseAnalyzer:
         if self._low_vis_counter >= VISIBILITY_WARN_FRAMES:
             region = occluded[0].replace("_", " ")
             self.visibility_warn = f"Can't see your {region} — adjust camera"
-
-    # ── Voice queue ───────────────────────────────────────────────────────────
-
-    def _enqueue_voice(self, text: str, priority: bool = False) -> None:
-        now = time.time()
-        if not priority and (now - self._last_voice_time) < self._voice_cooldown:
-            return
-        self.voice_queue.append({"text": text, "priority": priority})
-        self._last_voice_time = now
-
-    def pop_voice_cue(self) -> Optional[dict]:
-        """Frontend calls this to drain the queue one cue at a time."""
-        return self.voice_queue.pop(0) if self.voice_queue else None
 
     # ── Session summary ───────────────────────────────────────────────────────
 

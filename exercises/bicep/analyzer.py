@@ -73,6 +73,11 @@ class BicepAnalyzer(BaseAnalyzer):
         self._max_torso_lean_this_rep = 0.0
         self._fault_seen: set = set()        # tracks which faults already fired this rep
 
+        # Which arm is curling. Re-evaluated while at rest (not mid-rep) and
+        # latched for the duration of a rep so it can't flip mid-curl if the
+        # two elbow angles happen to cross due to landmark noise.
+        self._active_side = "left"
+
     # ── Form analysis ─────────────────────────────────────────────────────────
 
     def analyze_form(self, features: list, landmarks) -> None:
@@ -80,6 +85,10 @@ class BicepAnalyzer(BaseAnalyzer):
         State machine for bicep curl rep counting and form analysis.
 
         Key design decisions:
+        - Active arm (left/right) is picked from whichever elbow is more
+          contracted while at rest, then latched for the rep — see
+          _active_side. Tracking only the left arm meant a right-arm curl
+          counted zero reps.
         - Drift is ONLY checked at peak contraction (elbow < UP_THRESH).
           During the lifting phase the elbow naturally moves — checking it
           mid-range causes constant false positives.
@@ -88,9 +97,17 @@ class BicepAnalyzer(BaseAnalyzer):
         - Torso lean tolerance is 25° (not 20°) — humans naturally micro-sway.
         - Tolerance band of ±ANGLE_TOLERANCE_DEG applied on all thresholds.
         """
-        elbow_angle = features[1]   # left elbow angle (degrees)
-        drift       = features[0]   # body-relative elbow x drift
-        torso_lean  = features[6]   # degrees lean from vertical
+        left_angle, right_angle = features[1], features[2]
+        left_drift, right_drift = features[0], features[10]
+        torso_lean = features[6]   # bilateral — same regardless of active arm
+
+        if self.stage != Stage.UP:
+            self._active_side = "left" if left_angle <= right_angle else "right"
+
+        if self._active_side == "left":
+            elbow_angle, drift = left_angle, left_drift
+        else:
+            elbow_angle, drift = right_angle, right_drift
 
         # Track per-rep extremes for quality scoring
         self._peak_angle_this_rep     = min(self._peak_angle_this_rep,  elbow_angle)

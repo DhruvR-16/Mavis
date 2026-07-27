@@ -65,9 +65,9 @@ def get_visibility_map(landmarks) -> dict:
 
 class FeatureExtractor:
     """
-    Extracts 10 normalised geometric features from a pose landmark set.
+    Extracts 11 normalised geometric features from a pose landmark set.
 
-    Feature vector (indices match the trained scaler):
+    Feature vector:
         0  – left elbow drift  (body-relative, vs calibrated anchor)
         1  – left elbow angle  (degrees)
         2  – right elbow angle (degrees)
@@ -78,6 +78,7 @@ class FeatureExtractor:
         7  – bilateral elbow symmetry  (|left_angle - right_angle|)
         8  – left wrist height  (body-relative, above shoulder = negative)
         9  – right wrist height (body-relative)
+        10 – right elbow drift (body-relative, vs calibrated anchor)
     """
 
     def __init__(self):
@@ -146,10 +147,13 @@ class FeatureExtractor:
         # When calibrated we use the recorded neutral elbow-x; otherwise fall
         # back to the shoulder x (direct plumb), which is conservative but safe.
         if self.calibrated:
-            anchor_x = self.calib_left_elbow_x
+            left_anchor_x  = self.calib_left_elbow_x
+            right_anchor_x = self.calib_right_elbow_x
         else:
-            anchor_x = ls.x   # shoulder x is the plumb reference
-        left_drift = abs(le.x - anchor_x) / sw
+            left_anchor_x  = ls.x   # shoulder x is the plumb reference
+            right_anchor_x = rs.x
+        left_drift  = abs(le.x - left_anchor_x) / sw
+        right_drift = abs(re.x - right_anchor_x) / sw
 
         # ── wrist heights relative to shoulder (positive = below) ────────────
         left_wrist_height  = (lw.y - ls.y) / sw
@@ -172,6 +176,7 @@ class FeatureExtractor:
             symmetry,              # 7
             left_wrist_height,     # 8
             right_wrist_height,    # 9
+            right_drift,           # 10
         ]
 
     def get_angles_for_display(self, landmarks) -> dict:
