@@ -17,8 +17,6 @@ except ImportError:
         raise ImportError("Could not import keras from tensorflow or as standalone.")
 
 # Constants
-
-# Constants
 SEQUENCE_LENGTH = 30
 # Features based on CSV header:
 FEATURES = [
@@ -52,10 +50,12 @@ def create_sequences(X, y, time_steps=SEQUENCE_LENGTH, step=1):
     return np.array(X_seq), np.array(y_seq)
 
 def train_model():
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DATA_PATH = os.path.join(BASE_DIR, 'data', 'bicep_angles.csv')
-    MODELS_DIR = os.path.join(BASE_DIR, 'models')
-    
+    REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Data and models live alongside the analyzer that consumes them.
+    BICEP_DIR = os.path.join(REPO_ROOT, 'exercises', 'bicep')
+    DATA_PATH = os.path.join(BICEP_DIR, 'data', 'bicep_angles.csv')
+    MODELS_DIR = os.path.join(BICEP_DIR, 'models')
+
     if not os.path.exists(MODELS_DIR):
         os.makedirs(MODELS_DIR)
         

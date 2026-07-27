@@ -5,8 +5,13 @@ __pycache__/
 *.pyc
 .idea/
 
-# Ignore data folder entirely
-data/
+# macOS
+.DS_Store
+
+# Raw capture data and scratch datasets at the repo root (4.6 GB of video).
+# Leading slash matters: a bare `data/` also matches exercises/*/data/, which
+# silently excluded the training CSVs that tools/train_bicep_lstm.py reads.
+/data/
 
 # Node
 node_modules/

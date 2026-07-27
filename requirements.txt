@@ -1,0 +1,22 @@
+# Mavis — runtime dependencies for the desktop analyzer (`python run.py`).
+#
+# Requires Python 3.10–3.12. Verified on Python 3.10.17 (macOS, arm64).
+#
+#     python3 -m venv venv
+#     source venv/bin/activate        # Windows: venv\Scripts\activate
+#     pip install -r requirements.txt
+#
+# TensorFlow is deliberately NOT listed here. The analyzers detect its absence
+# and run in geometry-only mode, which is the supported path — see
+# requirements-train.txt if you want to retrain the models.
+
+mediapipe==0.10.14
+
+# `cv2` is provided by opencv-contrib-python, which mediapipe already depends on.
+# Do NOT also install `opencv-python`: the two ship competing copies of the same
+# cv2 module and shadow each other. Pinned to 4.11 because 4.12's metadata
+# requires numpy>=2, which mediapipe 0.10.x is not ABI-compatible with.
+opencv-contrib-python==4.11.0.86
+
+# Pinned below 2.0: mediapipe 0.10.x is built against the NumPy 1.x ABI.
+numpy==1.26.4
