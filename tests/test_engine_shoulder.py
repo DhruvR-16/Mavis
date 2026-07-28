@@ -44,7 +44,14 @@ def test_counts_all_four_reps(replayed):
 
 
 def test_rep_quality_scores(replayed):
-    assert replayed["qualities"] == [85, 85, 85, 65]
+    assert replayed["qualities"] == [100, 100, 100, 90]
+
+
+def test_ordinary_reps_are_not_flagged(replayed):
+    # Ordinary pressing. All four reps used to be faulted "too fast" because
+    # the descent alone was timed against a whole-rep threshold, and the
+    # symmetry tolerance sat right on the median of normal left/right variation.
+    assert replayed["faults"] == [[], [], [], []]
 
 
 def test_good_bad_split(replayed):

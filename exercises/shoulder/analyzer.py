@@ -9,7 +9,7 @@ import mediapipe as mp
 import time
 
 from analyzer.base_analyzer import (
-    BaseAnalyzer, Stage, CalibrationState,
+    BaseAnalyzer, Stage, CalibrationState, graded_penalty,
     ANGLE_TOLERANCE_DEG, SYMMETRY_TOLERANCE, TEMPO_MIN_SECONDS
 )
 from analyzer.exercise_config import exercise
@@ -29,6 +29,7 @@ QUALITY_WEIGHT_SYMMETRY = _CFG["scoring"]["symmetry"]
 QUALITY_WEIGHT_TEMPO    = _CFG["scoring"]["tempo"]
 
 _FAULTS = _CFG["faults"]
+_RAMPS = _CFG["ramps"]
 
 
 class LandmarkSmoother:
@@ -103,8 +104,8 @@ class ShoulderAnalyzer(BaseAnalyzer):
         # ── BOTTOM: elbows bent, bottom of press ─────────────────────────────
         if avg_angle < (PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG):
             if self.stage == Stage.UP:
-                duration = time.time() - self.rep_start_time
-                if duration < TEMPO_MIN_SECONDS:
+                # Full cycle, not just the descent.
+                if self.rep_duration() < TEMPO_MIN_SECONDS:
                     self._add_fault(_FAULTS["tempo"]["message"],
                                     severity=_FAULTS["tempo"]["severity"])
                 rep = self._complete_rep()
@@ -124,8 +125,12 @@ class ShoulderAnalyzer(BaseAnalyzer):
                 self._begin_rep()
                 self.feedback = "Lower with control"
 
-            if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
-                    and "asym" not in self._fault_seen:
+            # Debounced: the two arms drift in and out of sync frame to frame,
+            # so an instantaneous difference is not an imbalance.
+            uneven = self.confirm_fault(
+                "asym", symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG
+            )
+            if uneven and "asym" not in self._fault_seen:
                 self._fault_seen.add("asym")
                 self._add_fault(_FAULTS["symmetry"]["message"],
                                 severity=_FAULTS["symmetry"]["severity"])
@@ -136,10 +141,14 @@ class ShoulderAnalyzer(BaseAnalyzer):
         # ── MID-RANGE ─────────────────────────────────────────────────────────
         else:
             if self.stage == Stage.DOWN:
+                # Leaving the bottom is where the rep actually begins.
+                self.mark_cycle_start()
                 self.feedback = "Press up — full range"
             elif self.stage == Stage.UP:
-                if symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG \
-                        and "asym" not in self._fault_seen:
+                uneven = self.confirm_fault(
+                    "asym", symmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG
+                )
+                if uneven and "asym" not in self._fault_seen:
                     self._fault_seen.add("asym")
                     self._add_fault(_FAULTS["symmetryMidRange"]["message"],
                                     severity=_FAULTS["symmetryMidRange"]["severity"])
@@ -156,28 +165,37 @@ class ShoulderAnalyzer(BaseAnalyzer):
         self._fault_seen      = set()
         self.form_quality     = 100
         self.form_color       = (0, 255, 100)
+        self._reset_fault_streaks()
 
     def _score_rep(self) -> int:
+        """
+        Deductions ramp with how far past tolerance the athlete was, rather
+        than dropping the full weight the instant a line is crossed.
+        """
         score = 100
 
         # Lockout quality
         avg_top = (self._max_left_angle + self._max_right_angle) / 2
-        if avg_top < (PRESS_TOP_IDEAL - ANGLE_TOLERANCE_DEG):
-            score -= QUALITY_WEIGHT_LOCKOUT
+        score -= graded_penalty(
+            (PRESS_TOP_IDEAL - ANGLE_TOLERANCE_DEG) - avg_top,
+            _RAMPS["lockoutDeg"], QUALITY_WEIGHT_LOCKOUT,
+        )
 
         # Depth
         avg_bottom = (self._min_left_angle + self._min_right_angle) / 2
-        if avg_bottom > (PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG):
-            score -= QUALITY_WEIGHT_DEPTH
+        score -= graded_penalty(
+            avg_bottom - (PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG),
+            _RAMPS["depthDeg"], QUALITY_WEIGHT_DEPTH,
+        )
 
         # Symmetry
-        if self._max_asymmetry > SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG:
-            excess = (self._max_asymmetry - SYMMETRY_TOLERANCE) / SYMMETRY_TOLERANCE
-            score -= min(QUALITY_WEIGHT_SYMMETRY, int(QUALITY_WEIGHT_SYMMETRY * excess))
+        score -= graded_penalty(
+            self._max_asymmetry - (SYMMETRY_TOLERANCE + ANGLE_TOLERANCE_DEG),
+            _RAMPS["symmetryDeg"], QUALITY_WEIGHT_SYMMETRY,
+        )
 
-        # Tempo
-        duration = time.time() - self.rep_start_time
-        if duration < TEMPO_MIN_SECONDS:
+        # Tempo — full rep cycle, not the descent alone.
+        if self.rep_duration() < TEMPO_MIN_SECONDS:
             score -= QUALITY_WEIGHT_TEMPO
 
         return max(0, min(100, score))

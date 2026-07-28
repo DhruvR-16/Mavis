@@ -42,21 +42,31 @@ def test_shoulder_clean_rep_scores_full_marks():
     assert shoulder() == 100
 
 
-def test_shoulder_missed_lockout_is_deducted():
-    below_lockout = shoulder_mod.PRESS_TOP_IDEAL - ANGLE_TOLERANCE_DEG - 10
-    assert shoulder(top=below_lockout) == 100 - shoulder_mod.QUALITY_WEIGHT_LOCKOUT
+def test_shoulder_severely_missed_lockout_is_deducted():
+    # Well short of lockout — the full weight should land.
+    far_short = shoulder_mod.PRESS_TOP_IDEAL - ANGLE_TOLERANCE_DEG - 40
+    assert shoulder(top=far_short) == 100 - shoulder_mod.QUALITY_WEIGHT_LOCKOUT
 
 
-def test_shoulder_missed_depth_is_deducted():
-    above_depth = shoulder_mod.PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG + 10
-    assert shoulder(bottom=above_depth) == 100 - shoulder_mod.QUALITY_WEIGHT_DEPTH
+def test_shoulder_severely_missed_depth_is_deducted():
+    far_short = shoulder_mod.PRESS_BOTTOM_IDEAL + ANGLE_TOLERANCE_DEG + 40
+    assert shoulder(bottom=far_short) == 100 - shoulder_mod.QUALITY_WEIGHT_DEPTH
+
+
+def test_shoulder_marginal_miss_costs_less_than_a_severe_one():
+    # The point of graded penalties: missing lockout by 5° must not cost the
+    # same as missing it by 40°.
+    edge = shoulder_mod.PRESS_TOP_IDEAL - ANGLE_TOLERANCE_DEG
+    marginal = shoulder(top=edge - 5)
+    severe = shoulder(top=edge - 40)
+    assert 100 > marginal > severe
 
 
 def test_shoulder_asymmetry_is_deducted():
-    assert shoulder(asymmetry=SYMMETRY_TOLERANCE * 2) < 100
+    assert shoulder(asymmetry=SYMMETRY_TOLERANCE * 3) < 100
 
 
-def test_shoulder_fast_rep_is_deducted():
+def test_shoulder_bounced_rep_is_deducted():
     assert shoulder(rep_seconds=0.1) == 100 - shoulder_mod.QUALITY_WEIGHT_TEMPO
 
 
@@ -82,26 +92,33 @@ def test_bicep_clean_rep_scores_full_marks():
     assert bicep() == 100
 
 
-def test_bicep_missed_contraction_is_deducted():
-    shallow = bicep_mod.UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG + 10
-    assert bicep(peak=shallow) == 100 - bicep_mod.QUALITY_WEIGHT_RANGE
+def test_bicep_severely_missed_contraction_is_deducted():
+    barely_bent = bicep_mod.UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG + 40
+    assert bicep(peak=barely_bent) == 100 - bicep_mod.QUALITY_WEIGHT_RANGE
 
 
-def test_bicep_partial_extension_is_deducted():
-    short = bicep_mod.DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG * 2 - 10
+def test_bicep_severely_partial_extension_is_deducted():
+    short = bicep_mod.DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG * 2 - 35
     assert bicep(bottom=short) == 100 - int(bicep_mod.QUALITY_WEIGHT_RANGE * 0.5)
 
 
-def test_bicep_elbow_drift_is_deducted():
-    assert bicep(drift=DRIFT_TOLERANCE_BODY * 2) < 100
+def test_bicep_marginal_miss_costs_less_than_a_severe_one():
+    edge = bicep_mod.UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG
+    marginal = bicep(peak=edge + 5)
+    severe = bicep(peak=edge + 40)
+    assert 100 > marginal > severe
 
 
-def test_bicep_torso_swing_is_deducted():
-    swing = 20.0 + ANGLE_TOLERANCE_DEG + 10
+def test_bicep_severe_elbow_swing_is_deducted():
+    assert bicep(drift=DRIFT_TOLERANCE_BODY * 3) < 100
+
+
+def test_bicep_severe_torso_swing_is_deducted():
+    swing = bicep_mod.TORSO_TOLERANCE_DEG + 25
     assert bicep(lean=swing) == 100 - bicep_mod.QUALITY_WEIGHT_TORSO
 
 
-def test_bicep_fast_rep_is_deducted():
+def test_bicep_bounced_rep_is_deducted():
     assert bicep(rep_seconds=0.1) == 100 - bicep_mod.QUALITY_WEIGHT_TEMPO
 
 

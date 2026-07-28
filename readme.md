@@ -161,10 +161,46 @@ state machine for it.
 2. **Pose extraction** — MediaPipe isolates 33 body landmarks per frame.
 3. **Smoothing** — an exponential moving average over landmark positions suppresses jitter.
 4. **Calibration** — a 3-second standing hold captures your shoulder width and neutral elbow position, so all subsequent drift measurements are body-relative rather than pixel-relative. The hold must be genuinely still: movement past a small tolerance restarts the countdown instead of calibrating against whatever pose is held at the deadline.
-5. **Geometric features** — joint angles (elbow, shoulder), torso lean, bilateral symmetry, and normalized elbow drift.
+5. **Geometric features** — joint angles (elbow, shoulder), torso lean, bilateral symmetry, and elbow drift measured relative to your own shoulder (so shifting your stance mid-set isn't mistaken for your elbow moving).
 6. **Active-arm detection** (bicep curl) — whichever elbow is more contracted while at rest is picked as the working arm and locked for the duration of the rep, so curling with either arm is tracked correctly.
-7. **State machine** — maps the primary joint angle onto `DOWN` → `UP` → `DOWN` transitions to count reps, applying a ±15° tolerance band at each threshold.
+7. **State machine** — maps the primary joint angle onto `DOWN` → `UP` → `DOWN` transitions to count reps, applying a ±15° tolerance band at each threshold. A rep is timed from leaving the bottom to returning to it, so tempo covers the whole rep rather than the lowering phase alone.
 8. **Rep scoring** — each completed rep starts at 100 and is docked for range-of-motion shortfalls, fast tempo, elbow drift, and torso swing. Reps below 60 count as bad.
+
+---
+
+## 🎯 Room for error
+
+Nobody hits exact angles or exact tempos, and a coach that calls ordinary reps
+faulty just teaches you to ignore it. Every tolerance is set from measured
+distributions over the recorded training library (62 curl reps, 66 press reps),
+not from ideal-form theory.
+
+Three mechanisms keep normal variation from registering as a fault:
+
+- **Graded penalties.** Deductions ramp with how badly you missed instead of
+  dropping the full weight the instant a line is crossed. Missing peak
+  contraction by 2° costs a point or two; missing it by 40° costs the full 40.
+- **Fault debouncing.** A fault must hold for several consecutive frames before
+  it counts. Per-rep extremes are tracked with `max()`/`min()`, which by
+  construction latch onto the single worst frame in a rep — so without this,
+  one noisy landmark estimate was enough to fault a clean rep.
+- **Tolerances above normal variation.** Symmetry sits at 35°, above the
+  measured 35.5° median for real presses. Drift sits at 0.50 shoulder-widths
+  (~20cm of elbow travel — a visible swing, not a wobble).
+
+Measured effect on the same footage:
+
+| | Reps flagged before | after |
+|---|---|---|
+| Shoulder press | 61% | **5%** |
+| Bicep curl | 46% | **10%** |
+
+Mean quality rose from 84.8 → 95.7 (press) and 87.8 → 94.8 (curl).
+
+Loosening has an obvious failure mode in the other direction, so
+`tests/test_tolerance.py` asserts both halves: ordinary form must pass, and
+clearly poor form — big elbow swings, bounced reps, heavy torso swing — must
+still be caught.
 
 ---
 
@@ -178,14 +214,6 @@ This project is pre-1.0 and these are tracked, not hidden:
   from not running at all, at the cost of a `model.predict()` call every frame. Both
   analyzers are geometric-only now. `tools/train_bicep_lstm.py` remains for anyone who
   captures real multi-class data.
-- **"Tempo" measures only the eccentric, not the whole rep.** The timer starts at
-  peak contraction / lockout and stops at full extension / the bottom, so it clocks
-  the lowering phase alone. `RepResult.duration_sec` and the session summary's
-  `rep_durations` nevertheless present it as the rep duration. On
-  `fixtures/shoulder_press.json` — four presses over seven seconds, ~1.75 s each —
-  the measured intervals are 0.53–0.60 s, so all four trip the 0.8 s threshold.
-  Either the threshold wants retuning for eccentric-only measurement, or the timer
-  should span the full rep. Both engines behave identically here.
 - **The web engine's analysis logic still lives inside `Workout.tsx`**, so unlike
   the Python engine it has no automated test coverage. Extracting it into a pure
   module is what would let the same fixtures verify both engines agree.

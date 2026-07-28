@@ -41,6 +41,28 @@ CALIB_HOLD_SECONDS        = _CALIB["holdSeconds"]
 _INDEX_TO_NAME = {v: k for k, v in LM.items()}
 CALIB_KEY_POINTS = tuple(_INDEX_TO_NAME[i] for i in _CALIB["keyPoints"])
 
+# A fault condition must hold for this many consecutive frames before it is
+# recorded. Per-rep extremes are tracked with max()/min(), which by
+# construction latch onto the single worst frame in the rep — so without
+# debouncing, one noisy landmark estimate is enough to fault an otherwise
+# clean rep. Measured against real training footage, instantaneous spikes were
+# the dominant source of false faults.
+FAULT_CONFIRM_FRAMES = _TOL["faultConfirmFrames"]
+
+
+def graded_penalty(excess: float, ramp: float, weight: int) -> int:
+    """
+    Scale a deduction by how badly the athlete actually missed.
+
+    A binary threshold punishes missing by 1° exactly as hard as missing by
+    40°, which makes scores feel arbitrary and unforgiving. This returns no
+    penalty while within tolerance, then ramps linearly to the full weight once
+    `ramp` units past it.
+    """
+    if excess <= 0:
+        return 0
+    return int(round(weight * min(1.0, excess / ramp)))
+
 
 class Stage(Enum):
     IDLE   = "idle"
@@ -114,7 +136,15 @@ class BaseAnalyzer:
         self.current_set  = 0          # 0 = free mode (no program)
 
         # ── rep timing ───────────────────────────────────────────────────────
+        # rep_start_time marks the top of the movement (start of the eccentric).
+        # _rep_cycle_start marks when the athlete first left the bottom, so a
+        # rep's reported duration covers the whole cycle rather than the
+        # lowering phase alone.
         self.rep_start_time   = 0.0
+        self._rep_cycle_start = 0.0
+
+        # ── fault debouncing ─────────────────────────────────────────────────
+        self._fault_streaks: dict = {}
 
         # ── quality history for trend graph ──────────────────────────────────
         self.rep_history: list[RepResult] = []
@@ -265,12 +295,48 @@ class BaseAnalyzer:
         self.current_faults  = []
         self.form_quality    = 100
 
+    def mark_cycle_start(self) -> None:
+        """
+        Called on the first frame the athlete leaves the bottom position.
+
+        This is the true start of a rep. rep_start_time, by contrast, is only
+        set once the top is reached, so timing from it measures the eccentric
+        alone — which used to be compared against a whole-rep tempo threshold
+        and reported as the rep duration.
+        """
+        if self._rep_cycle_start == 0.0:
+            self._rep_cycle_start = time.time()
+
+    def rep_duration(self) -> float:
+        """Elapsed time for the current rep, covering the full cycle."""
+        start = self._rep_cycle_start or self.rep_start_time
+        return time.time() - start if start else 0.0
+
+    def confirm_fault(self, key: str, active: bool) -> bool:
+        """
+        Debounce a fault condition.
+
+        Returns True only once the condition has held for
+        FAULT_CONFIRM_FRAMES consecutive frames, so a single noisy landmark
+        estimate can't fault an otherwise clean rep.
+        """
+        if not active:
+            self._fault_streaks[key] = 0
+            return False
+        streak = self._fault_streaks.get(key, 0) + 1
+        self._fault_streaks[key] = streak
+        return streak >= FAULT_CONFIRM_FRAMES
+
+    def _reset_fault_streaks(self) -> None:
+        self._fault_streaks.clear()
+
     def _complete_rep(self) -> RepResult:
         """
         Finalise a rep, score it, store it, and update program state.
         """
-        duration = time.time() - self.rep_start_time
+        duration = self.rep_duration()
         quality  = self._score_rep()
+        self._rep_cycle_start = 0.0
 
         self.total_reps += 1
 

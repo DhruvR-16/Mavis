@@ -38,13 +38,13 @@ def session():
         yield analyzer, clock
 
 
-def curl(analyzer, clock, side, drift=0.0, eccentric_s=0.9):
+def curl(analyzer, clock, side, drift=0.0, eccentric_s=0.9, peak_frames=8):
     """
     Drive one full curl on `side`, holding the other arm extended.
 
-    `eccentric_s` is the dwell at peak contraction before lowering; the tempo
-    fault keys off this interval, so keeping it above TEMPO_MIN_SECONDS gives a
-    clean rep by default.
+    `peak_frames` holds the contracted position long enough for a debounced
+    fault to confirm — faults require FAULT_CONFIRM_FRAMES consecutive frames,
+    so a single peak frame can never raise one.
     """
     def frame(angle):
         if side == "right":
@@ -53,6 +53,10 @@ def curl(analyzer, clock, side, drift=0.0, eccentric_s=0.9):
 
     for angle in (170, 150, 120, 90, 60, 40):
         analyzer.analyze_form(frame(angle), None)
+        clock.tick()
+
+    for _ in range(peak_frames):
+        analyzer.analyze_form(frame(40), None)
         clock.tick()
 
     for _ in range(int(eccentric_s * FPS)):
@@ -79,7 +83,7 @@ def test_active_side_follows_the_working_arm():
 
 def test_right_arm_drift_fault_is_attributed_to_the_right_elbow():
     with session() as (a, clock):
-        curl(a, clock, "right", drift=0.30)
+        curl(a, clock, "right", drift=1.2)
         assert "Elbow drifting forward" in a.rep_history[0].faults
 
 
@@ -87,7 +91,7 @@ def test_idle_arm_drift_does_not_raise_a_fault():
     # Left arm drifts wildly but is not the working arm — must be ignored.
     with session() as (a, clock):
         def frame(angle):
-            return features(left_angle=170, right_angle=angle, left_drift=0.9)
+            return features(left_angle=170, right_angle=angle, left_drift=1.2)
 
         for angle in (170, 150, 120, 90, 60, 40):
             a.analyze_form(frame(angle), None)

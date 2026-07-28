@@ -17,9 +17,14 @@ from tests.replay import load_fixture, replay, summarise
 
 
 @pytest.fixture(scope="module")
-def replayed():
+def replayed_analyzer():
     meta, frames = load_fixture("bicep_curl")
-    return summarise(replay(BicepAnalyzer(), frames, meta["fps"]))
+    return replay(BicepAnalyzer(), frames, meta["fps"])
+
+
+@pytest.fixture(scope="module")
+def replayed(replayed_analyzer):
+    return summarise(replayed_analyzer)
 
 
 def test_counts_both_reps(replayed):
@@ -27,26 +32,25 @@ def test_counts_both_reps(replayed):
 
 
 def test_rep_quality_scores(replayed):
-    assert replayed["qualities"] == [75, 85]
+    assert replayed["qualities"] == [100, 100]
 
 
 def test_good_bad_split(replayed):
-    # Both reps clear the quality>=60 bar, so neither is counted bad.
     assert (replayed["good"], replayed["bad"]) == (2, 0)
 
 
-def test_faults_detected_per_rep(replayed):
-    # Rep 1's eccentric is genuinely rushed; rep 2 shows elbow drift.
-    assert replayed["faults"] == [
-        ["Too fast — control the negative"],
-        ["Elbow drifting forward"],
-    ]
+def test_ordinary_reps_are_not_flagged(replayed):
+    # This is footage of someone curling normally. Both reps used to be
+    # faulted — one for a "too fast" eccentric that was really just the
+    # eccentric being timed against a whole-rep threshold, one for elbow drift
+    # measured against an absolute coordinate that moves when the lifter does.
+    # A coach that calls ordinary reps bad teaches users to ignore it.
+    assert replayed["faults"] == [[], []]
 
 
-def test_quality_matches_fault_deductions(replayed):
-    # Guards the scoring weights against silent drift: the tempo fault costs
-    # QUALITY_WEIGHT_TEMPO (25) and the drift fault is scaled by how far past
-    # DRIFT_TOLERANCE_BODY the elbow travelled.
-    from exercises.bicep.analyzer import QUALITY_WEIGHT_TEMPO
+def test_rep_duration_covers_the_whole_rep(replayed_analyzer):
+    # Timed from leaving the bottom to returning, not just the lowering phase.
+    from analyzer.base_analyzer import TEMPO_MIN_SECONDS
 
-    assert replayed["qualities"][0] == 100 - QUALITY_WEIGHT_TEMPO
+    for rep in replayed_analyzer.rep_history:
+        assert rep.duration_sec >= TEMPO_MIN_SECONDS

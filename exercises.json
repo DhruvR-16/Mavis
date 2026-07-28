@@ -10,11 +10,31 @@
     "Landmark indices are MediaPipe Pose indices."
   ],
 
+  "_tolerancesComment": [
+    "Set from measured distributions over the recorded training library",
+    "(62 curl reps, 66 press reps), not from ideal-form theory. Nobody hits",
+    "exact numbers, so each tolerance sits above normal human variation and",
+    "only clearly poor execution is flagged. Deductions ramp rather than",
+    "cliff - see graded_penalty() - so a near miss costs a little and a big",
+    "miss costs the full weight.",
+    "Before this tuning, 61% of real press reps and 46% of real curl reps",
+    "were flagged as faulty, which trains users to ignore the coach."
+  ],
   "tolerances": {
     "angleDeg": 15.0,
-    "driftBodyRatio": 0.18,
-    "symmetryDeg": 20.0,
-    "tempoMinSeconds": 0.8,
+
+    "_driftNote": "Torso-relative, in shoulder-widths (~40cm), so 0.50 is ~20cm of elbow travel - a visible swing, not a wobble. Measured curl drift: median 0.19, p75 0.39, p90 0.92. A tighter 0.30 flagged 35% of ordinary reps.",
+    "driftBodyRatio": 0.50,
+
+    "_symmetryNote": "Measured press asymmetry: median 35.5deg. The old 20deg (35deg effective) flagged half of all normal reps.",
+    "symmetryDeg": 35.0,
+
+    "_tempoNote": "Full-rep duration, not eccentric-only. Measured medians: 1.24s curl, 1.10s press; p25 0.70/0.80. 0.5s flags only a genuine bounce.",
+    "tempoMinSeconds": 0.5,
+
+    "_faultConfirmNote": "Consecutive frames a fault must hold before counting. Per-rep max()/min() tracking latches onto the worst single frame, so debouncing is what removes noise-driven faults.",
+    "faultConfirmFrames": 4,
+
     "visibilityThreshold": 0.55,
     "visibilityWarnFrames": 12
   },
@@ -40,12 +60,15 @@
       "thresholds": { "up": 45.0, "down": 160.0 },
       "direction": "flexion",
 
+      "_rampsComment": "How far past tolerance counts as a full-weight miss. Measured curl ROM: peak median 6deg (p90 40), bottom median 172deg (p10 153).",
+      "ramps": { "peakDeg": 35.0, "bottomDeg": 30.0, "driftRatio": 0.40 },
+
       "scoring": { "range": 40, "tempo": 25, "drift": 20, "torso": 15 },
 
       "faults": {
         "tempo": { "message": "Too fast — control the negative", "severity": 25 },
         "drift": { "message": "Elbow drifting forward", "severity": 20 },
-        "torso": { "message": "Torso swinging", "severity": 15, "toleranceDeg": 25.0 }
+        "torso": { "message": "Torso swinging", "severity": 15, "toleranceDeg": 25.0, "rampDeg": 20.0 }
       },
 
       "requiredRegions": ["left_arm", "right_arm"]
@@ -67,6 +90,9 @@
 
       "thresholds": { "up": 165.0, "down": 75.0 },
       "direction": "extension",
+
+      "_rampsComment": "Measured press ROM: lockout median 170deg (p10 164), bottom median 28deg (p90 43). Both were already tolerant; the ramps stop a marginal miss costing full weight.",
+      "ramps": { "lockoutDeg": 30.0, "depthDeg": 35.0, "symmetryDeg": 35.0 },
 
       "scoring": { "lockout": 35, "depth": 30, "symmetry": 20, "tempo": 15 },
 

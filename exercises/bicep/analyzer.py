@@ -10,7 +10,10 @@ import cv2
 import mediapipe as mp
 import time
 
-from analyzer.base_analyzer import BaseAnalyzer, Stage, CalibrationState, ANGLE_TOLERANCE_DEG, DRIFT_TOLERANCE_BODY, TEMPO_MIN_SECONDS
+from analyzer.base_analyzer import (
+    BaseAnalyzer, Stage, CalibrationState, graded_penalty,
+    ANGLE_TOLERANCE_DEG, DRIFT_TOLERANCE_BODY, TEMPO_MIN_SECONDS,
+)
 from analyzer.exercise_config import exercise
 from analyzer.feature_extractor import FeatureExtractor, get_visibility_map, LM
 
@@ -29,6 +32,7 @@ QUALITY_WEIGHT_DRIFT = _CFG["scoring"]["drift"]   # was the elbow stable?
 QUALITY_WEIGHT_TORSO = _CFG["scoring"]["torso"]   # did the torso stay upright?
 
 _FAULTS = _CFG["faults"]
+_RAMPS = _CFG["ramps"]
 TORSO_TOLERANCE_DEG = _FAULTS["torso"]["toleranceDeg"]
 
 
@@ -125,8 +129,8 @@ class BicepAnalyzer(BaseAnalyzer):
         # ── DOWN: arm fully extended ─────────────────────────────────────────
         if elbow_angle > (DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG):
             if self.stage == Stage.UP:
-                duration = time.time() - self.rep_start_time
-                if duration < TEMPO_MIN_SECONDS:
+                # Full cycle, not just the lowering phase.
+                if self.rep_duration() < TEMPO_MIN_SECONDS:
                     self._add_fault(_FAULTS["tempo"]["message"],
                                     severity=_FAULTS["tempo"]["severity"])
                 rep = self._complete_rep()
@@ -148,7 +152,12 @@ class BicepAnalyzer(BaseAnalyzer):
 
             # Drift only meaningful at peak — elbow forward away from body
             # Only flag once per rep to avoid spamming the quality score
-            if drift > DRIFT_TOLERANCE_BODY and "drift" not in self._fault_seen:
+            # Faults must hold for several consecutive frames — a single noisy
+            # landmark estimate should never cost the athlete a rep.
+            drifting = self.confirm_fault("drift", drift > DRIFT_TOLERANCE_BODY)
+            swinging = self.confirm_fault("torso", torso_lean > TORSO_TOLERANCE_DEG)
+
+            if drifting and "drift" not in self._fault_seen:
                 self._fault_seen.add("drift")
                 self._add_fault(_FAULTS["drift"]["message"],
                                 severity=_FAULTS["drift"]["severity"])
@@ -156,7 +165,7 @@ class BicepAnalyzer(BaseAnalyzer):
 
             # Torso swing — tolerance is wider than the angle band because real
             # human micro-sway is ≤15°
-            elif torso_lean > TORSO_TOLERANCE_DEG and "torso" not in self._fault_seen:
+            elif swinging and "torso" not in self._fault_seen:
                 self._fault_seen.add("torso")
                 self._add_fault(_FAULTS["torso"]["message"],
                                 severity=_FAULTS["torso"]["severity"])
@@ -168,6 +177,8 @@ class BicepAnalyzer(BaseAnalyzer):
         # ── MID-RANGE: between down and up ───────────────────────────────────
         else:
             if self.stage == Stage.DOWN:
+                # Leaving the bottom is where the rep actually begins.
+                self.mark_cycle_start()
                 self.feedback = "Curl up"
             elif self.stage == Stage.UP:
                 self.feedback = "Lower slowly"
@@ -180,34 +191,45 @@ class BicepAnalyzer(BaseAnalyzer):
         self._fault_seen              = set()
         self.form_quality             = 100
         self.form_color               = (0, 255, 100)
+        self._reset_fault_streaks()
 
     # ── Quality scoring ────────────────────────────────────────────────────────
 
     def _score_rep(self) -> int:
+        """
+        Deductions ramp with how far past tolerance the athlete was, rather
+        than dropping the full weight the instant a line is crossed. Missing
+        peak contraction by 2° should not cost the same as missing it by 40°.
+        """
         score = 100
 
-        # Range of motion: did they reach near-full contraction and extension?
-        peak_bonus = max(0, (UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG) - self._peak_angle_this_rep)
-        # peak_bonus > 0 means they went deep enough — if not, deduct
-        if self._peak_angle_this_rep > (UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG):
-            score -= QUALITY_WEIGHT_RANGE    # no contraction reached
+        # Range of motion — contraction reached at the top.
+        score -= graded_penalty(
+            self._peak_angle_this_rep - (UP_ANGLE_IDEAL + ANGLE_TOLERANCE_DEG),
+            _RAMPS["peakDeg"], QUALITY_WEIGHT_RANGE,
+        )
 
-        if self._bottom_angle_this_rep < (DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG * 2):
-            score -= int(QUALITY_WEIGHT_RANGE * 0.5)  # partial deduction for partial extension
+        # Range of motion — extension reached at the bottom.
+        score -= graded_penalty(
+            (DOWN_ANGLE_IDEAL - ANGLE_TOLERANCE_DEG * 2) - self._bottom_angle_this_rep,
+            _RAMPS["bottomDeg"], int(QUALITY_WEIGHT_RANGE * 0.5),
+        )
 
-        # Tempo
-        duration = time.time() - self.rep_start_time
-        if duration < TEMPO_MIN_SECONDS:
+        # Tempo — full rep cycle, not the eccentric alone.
+        if self.rep_duration() < TEMPO_MIN_SECONDS:
             score -= QUALITY_WEIGHT_TEMPO
 
-        # Elbow drift
-        if self._max_drift_this_rep > DRIFT_TOLERANCE_BODY:
-            excess = (self._max_drift_this_rep - DRIFT_TOLERANCE_BODY) / DRIFT_TOLERANCE_BODY
-            score -= min(QUALITY_WEIGHT_DRIFT, int(QUALITY_WEIGHT_DRIFT * excess))
+        # Elbow drift.
+        score -= graded_penalty(
+            self._max_drift_this_rep - DRIFT_TOLERANCE_BODY,
+            _RAMPS["driftRatio"], QUALITY_WEIGHT_DRIFT,
+        )
 
-        # Torso lean
-        if self._max_torso_lean_this_rep > 20.0 + ANGLE_TOLERANCE_DEG:
-            score -= QUALITY_WEIGHT_TORSO
+        # Torso swing.
+        score -= graded_penalty(
+            self._max_torso_lean_this_rep - TORSO_TOLERANCE_DEG,
+            _FAULTS["torso"]["rampDeg"], QUALITY_WEIGHT_TORSO,
+        )
 
         return max(0, min(100, score))
 

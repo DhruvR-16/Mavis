@@ -87,6 +87,8 @@ class FeatureExtractor:
         self.calib_shoulder_width: float = 0.2
         self.calib_left_elbow_x: float = 0.5
         self.calib_right_elbow_x: float = 0.5
+        self.calib_left_elbow_offset: float = 0.0
+        self.calib_right_elbow_offset: float = 0.0
         self.calib_torso_angle: float = 90.0
 
     def calibrate(self, landmarks) -> None:
@@ -102,6 +104,12 @@ class FeatureExtractor:
         rs = landmarks[LM["right_shoulder"]]
         lh = landmarks[LM["left_hip"]]
         rh = landmarks[LM["right_hip"]]
+
+        # Neutral elbow position expressed relative to its own shoulder, so
+        # drift stays meaningful if the lifter shifts around in frame.
+        sw = self.calib_shoulder_width
+        self.calib_left_elbow_offset  = (landmarks[LM["left_elbow"]].x - ls.x) / sw
+        self.calib_right_elbow_offset = (landmarks[LM["right_elbow"]].x - rs.x) / sw
 
         # Torso angle: angle at shoulder midpoint between vertical and hip midpoint
         smx = (ls.x + rs.x) / 2
@@ -140,20 +148,26 @@ class FeatureExtractor:
         hmx = (lh.x + rh.x) / 2;  hmy = (lh.y + rh.y) / 2
         torso_angle = math.degrees(math.atan2(abs(smx - hmx), abs(smy - hmy) + 1e-9))
 
-        # ── body-relative elbow drift vs shoulder-hip plumb line ─────────────
-        # We measure how far the elbow is horizontally from directly below the
-        # shoulder — this is stable regardless of arm position and captures the
-        # real fault: elbow swinging FORWARD away from the body.
-        # When calibrated we use the recorded neutral elbow-x; otherwise fall
-        # back to the shoulder x (direct plumb), which is conservative but safe.
+        # ── torso-relative elbow drift ───────────────────────────────────────
+        # Measured as the elbow's horizontal offset FROM ITS OWN SHOULDER,
+        # normalised by shoulder width, compared against the same quantity
+        # captured at calibration.
+        #
+        # This deliberately does not compare against an absolute calibrated
+        # x-coordinate: doing so made any whole-body movement register as elbow
+        # drift, so a lifter who shifted their stance or drifted across frame
+        # was faulted for an elbow that never actually left their side.
+        # Offset-from-shoulder is invariant to translation, and dividing by
+        # shoulder width makes it invariant to distance from the camera.
+        left_offset  = (le.x - ls.x) / sw
+        right_offset = (re.x - rs.x) / sw
         if self.calibrated:
-            left_anchor_x  = self.calib_left_elbow_x
-            right_anchor_x = self.calib_right_elbow_x
+            left_drift  = abs(left_offset - self.calib_left_elbow_offset)
+            right_drift = abs(right_offset - self.calib_right_elbow_offset)
         else:
-            left_anchor_x  = ls.x   # shoulder x is the plumb reference
-            right_anchor_x = rs.x
-        left_drift  = abs(le.x - left_anchor_x) / sw
-        right_drift = abs(re.x - right_anchor_x) / sw
+            # Uncalibrated: fall back to the plumb line under the shoulder.
+            left_drift  = abs(left_offset)
+            right_drift = abs(right_offset)
 
         # ── wrist heights relative to shoulder (positive = below) ────────────
         left_wrist_height  = (lw.y - ls.y) / sw

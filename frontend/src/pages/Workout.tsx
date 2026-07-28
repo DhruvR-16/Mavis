@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Chart } from 'chart.js/auto';
 import { usePoseDetection, type PoseLandmark } from '../hooks/usePoseDetection';
-import { CALIBRATION, TOLERANCES, getExercise } from '../engine/config';
+import { CALIBRATION, TOLERANCES, getExercise, gradedPenalty } from '../engine/config';
 import './Workout.css';
 
 type Landmark = {
@@ -34,12 +34,16 @@ type SessionState = {
   calibStart: number;
   calib: {
     shoulderWidth: number;
-    leftElbowAnchorX: number;
-    rightElbowAnchorX: number;
+    /** Neutral elbow offset from its own shoulder, in shoulder-widths. */
+    leftElbowOffset: number;
+    rightElbowOffset: number;
   };
   repQualities: number[];
   repLog: RepLogItem[];
+  /** Top of the movement — start of the eccentric. */
   repStartTime: number;
+  /** When the athlete first left the bottom: the true start of the rep. */
+  repCycleStart: number;
   repFaults: string[];
   repQualityLive: number;
   peakAngle: number;
@@ -87,10 +91,11 @@ const initialState = (isBicep: boolean): SessionState => ({
   activeSide: 'left',
   calibrated: false,
   calibStart: 0,
-  calib: { shoulderWidth: 0.2, leftElbowAnchorX: 0.5, rightElbowAnchorX: 0.5 },
+  calib: { shoulderWidth: 0.2, leftElbowOffset: 0, rightElbowOffset: 0 },
   repQualities: [],
   repLog: [],
   repStartTime: 0,
+  repCycleStart: 0,
   repFaults: [],
   repQualityLive: 100,
   peakAngle: isBicep ? 180 : 0,
@@ -267,6 +272,37 @@ export default function Workout() {
     });
   };
 
+  /**
+   * Debounce a fault condition: it must hold for faultConfirmFrames
+   * consecutive frames before counting. Per-rep extremes are tracked with
+   * Math.max/min, which by construction latch onto the worst single frame in
+   * the rep, so without this one noisy landmark estimate is enough to fault an
+   * otherwise clean rep. Mirrors confirm_fault() in the Python engine.
+   */
+  const faultStreaksRef = useRef<Record<string, number>>({});
+
+  const confirmFault = (key: string, active: boolean): boolean => {
+    if (!active) {
+      faultStreaksRef.current[key] = 0;
+      return false;
+    }
+    const streak = (faultStreaksRef.current[key] ?? 0) + 1;
+    faultStreaksRef.current[key] = streak;
+    return streak >= TOLERANCES.faultConfirmFrames;
+  };
+
+  /** Elapsed time for the current rep, covering the full cycle. */
+  const repDuration = () => {
+    const s = stateRef.current;
+    const start = s.repCycleStart || s.repStartTime;
+    return start ? Date.now() - start : 0;
+  };
+
+  /** First frame the athlete leaves the bottom — the true start of a rep. */
+  const markCycleStart = () => {
+    if (!stateRef.current.repCycleStart) mutateRef({ repCycleStart: Date.now() });
+  };
+
   const beginRep = () => {
     mutateRef({
       repStartTime: Date.now(),
@@ -277,29 +313,40 @@ export default function Workout() {
       maxDrift: 0,
       maxLean: 0,
     });
+    faultStreaksRef.current = {};
   };
 
+  /**
+   * Deductions ramp with how far past tolerance the athlete was, rather than
+   * dropping the full weight the instant a line is crossed — missing peak
+   * contraction by 2° should not cost the same as missing it by 40°.
+   */
   const scoreRep = () => {
     const snapshot = stateRef.current;
     let q = 100;
 
     const w = DEF.scoring;
-    const dur = Date.now() - snapshot.repStartTime;
+    const r = DEF.ramps;
+    const dur = repDuration();
 
     if (IS_BICEP) {
-      if (snapshot.peakAngle > THRESH.upIdeal + TOLERANCE) q -= w.range;
-      if (snapshot.bottomAngle < THRESH.downIdeal - TOLERANCE * 2) q -= Math.round(w.range * 0.5);
-      if (snapshot.maxDrift > DRIFT_TOL) {
-        q -= Math.min(w.drift, Math.round((w.drift * (snapshot.maxDrift - DRIFT_TOL)) / DRIFT_TOL));
-      }
-      if (snapshot.maxLean > DEF.faults.torso.toleranceDeg!) q -= w.torso;
+      q -= gradedPenalty(snapshot.peakAngle - (THRESH.upIdeal + TOLERANCE), r.peakDeg!, w.range);
+      q -= gradedPenalty(
+        THRESH.downIdeal - TOLERANCE * 2 - snapshot.bottomAngle,
+        r.bottomDeg!,
+        Math.round(w.range * 0.5),
+      );
+      q -= gradedPenalty(snapshot.maxDrift - DRIFT_TOL, r.driftRatio!, w.drift);
+      q -= gradedPenalty(
+        snapshot.maxLean - DEF.faults.torso.toleranceDeg!,
+        DEF.faults.torso.rampDeg!,
+        w.torso,
+      );
       if (dur < MIN_TEMPO_MS) q -= w.tempo;
     } else {
-      if (snapshot.peakAngle < THRESH.upIdeal - TOLERANCE) q -= w.lockout;
-      if (snapshot.bottomAngle > THRESH.downIdeal + TOLERANCE) q -= w.depth;
-      if (snapshot.maxDrift > THRESH.asym + TOLERANCE) {
-        q -= Math.min(w.symmetry, Math.round((w.symmetry * (snapshot.maxDrift - THRESH.asym)) / THRESH.asym));
-      }
+      q -= gradedPenalty(THRESH.upIdeal - TOLERANCE - snapshot.peakAngle, r.lockoutDeg!, w.lockout);
+      q -= gradedPenalty(snapshot.bottomAngle - (THRESH.downIdeal + TOLERANCE), r.depthDeg!, w.depth);
+      q -= gradedPenalty(snapshot.maxDrift - (THRESH.asym + TOLERANCE), r.symmetryDeg!, w.symmetry);
       if (dur < MIN_TEMPO_MS) q -= w.tempo;
     }
 
@@ -442,6 +489,9 @@ export default function Workout() {
         repLog: [...prev.repLog, rep],
         repFaults: [],
         repQualityLive: 100,
+        // Cleared so the next rep is timed from when the lifter leaves the
+        // bottom again, not from this rep's start.
+        repCycleStart: 0,
         peakAngle: IS_BICEP ? 180 : 0,
         bottomAngle: IS_BICEP ? 0 : 180,
         maxDrift: 0,
@@ -449,6 +499,7 @@ export default function Workout() {
       };
     });
 
+    faultStreaksRef.current = {};
     updateQualityChart(quality);
     voiceForRep(quality);
     if (rep) updateProgramAfterRep(rep);
@@ -478,9 +529,19 @@ export default function Workout() {
     }
     const active = stateRef.current.activeSide;
     const elbowAngle = active === 'left' ? leftAngle : rightAngle;
-    const elbowX = active === 'left' ? le.x : re.x;
-    const anchorX = active === 'left' ? stateRef.current.calib.leftElbowAnchorX : stateRef.current.calib.rightElbowAnchorX;
-    const drift = Math.abs(elbowX - anchorX) / sw;
+
+    // Drift is the elbow's offset FROM ITS OWN SHOULDER, compared against the
+    // same quantity at calibration. Comparing against an absolute calibrated
+    // x-coordinate made any whole-body movement register as elbow drift, so a
+    // lifter who shifted stance was faulted for an elbow that never left their
+    // side. Offset-from-shoulder is invariant to translation; dividing by
+    // shoulder width makes it invariant to distance from the camera.
+    const elbowOffset = active === 'left' ? (le.x - ls.x) / sw : (re.x - rs.x) / sw;
+    const anchorOffset =
+      active === 'left'
+        ? stateRef.current.calib.leftElbowOffset
+        : stateRef.current.calib.rightElbowOffset;
+    const drift = Math.abs(elbowOffset - anchorOffset);
 
     const torsoLean =
       Math.abs(
@@ -511,16 +572,21 @@ export default function Workout() {
         beginRep();
         mutateRef({ stage: 'up' });
       }
-      if (drift > DRIFT_TOL) addFault(DEF.faults.drift.message, DEF.faults.drift.severity);
-      if (torsoLean > DEF.faults.torso.toleranceDeg!) {
+      // Debounced: one noisy frame is jitter, not bad form.
+      if (confirmFault('drift', drift > DRIFT_TOL)) {
+        addFault(DEF.faults.drift.message, DEF.faults.drift.severity);
+      }
+      if (confirmFault('torso', torsoLean > DEF.faults.torso.toleranceDeg!)) {
         addFault(DEF.faults.torso.message, DEF.faults.torso.severity);
       }
       setFeedback(stateRef.current.repFaults[0] || 'Squeeze at top', stateRef.current.repFaults.length ? 'bad' : 'good');
       return;
     }
 
-    if (stateRef.current.stage === 'down') setFeedback('Curl up', 'info');
-    else setFeedback('Lower slowly', 'info');
+    if (stateRef.current.stage === 'down') {
+      markCycleStart();
+      setFeedback('Curl up', 'info');
+    } else setFeedback('Lower slowly', 'info');
   };
 
   const analyzeShoulder = (lms: Landmark[]) => {
@@ -554,15 +620,19 @@ export default function Workout() {
         beginRep();
         mutateRef({ stage: 'up' });
       }
-      if (asym > THRESH.asym + TOLERANCE) {
+      // Debounced: the two arms drift in and out of sync frame to frame, so
+      // an instantaneous difference is not an imbalance.
+      if (confirmFault('asym', asym > THRESH.asym + TOLERANCE)) {
         addFault(DEF.faults.symmetry.message, DEF.faults.symmetry.severity);
       }
       setFeedback(stateRef.current.repFaults[0] || 'Lockout overhead', stateRef.current.repFaults.length ? 'bad' : 'good');
       return;
     }
 
-    if (stateRef.current.stage === 'down') setFeedback('Press up - full range', 'info');
-    else setFeedback('Lower under control', 'info');
+    if (stateRef.current.stage === 'down') {
+      markCycleStart();
+      setFeedback('Press up - full range', 'info');
+    } else setFeedback('Lower under control', 'info');
   };
 
   const checkVisibility = (lms: Landmark[]) => {
@@ -677,12 +747,15 @@ export default function Workout() {
       });
 
       if (elapsed >= CALIB_HOLD_MS) {
+        const sw = shoulderWidth(lms);
         mutateRef({
           calibrated: true,
           calib: {
-            shoulderWidth: shoulderWidth(lms),
-            leftElbowAnchorX: lms[13].x,
-            rightElbowAnchorX: lms[14].x,
+            shoulderWidth: sw,
+            // Stored relative to each shoulder so drift survives the lifter
+            // shifting position mid-set.
+            leftElbowOffset: (lms[13].x - lms[11].x) / sw,
+            rightElbowOffset: (lms[14].x - lms[12].x) / sw,
           },
         });
         setCalibVisible(false);
