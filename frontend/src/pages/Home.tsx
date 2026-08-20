@@ -1,16 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { loadHistory } from '../storage/history';
+import { summarise } from '../storage/stats';
 import './Home.css';
 
 type ExerciseType = 'bicep' | 'shoulder';
 type SessionMode = 'free' | 'program';
-
-type LastSessionStats = {
-  total_reps?: number;
-  avg_quality?: number;
-  good_reps?: number;
-  most_common_fault?: string;
-};
 
 const DEFAULT_STATS = {
   reps: '—',
@@ -31,22 +26,33 @@ export default function Home() {
   const [rest, setRest] = useState(60);
 
   const [stats, setStats] = useState(DEFAULT_STATS);
+  const [sessionCount, setSessionCount] = useState(0);
+  const [streak, setStreak] = useState(0);
 
   useEffect(() => {
-    const raw = localStorage.getItem('mavis_last_session');
-    if (!raw) return;
+    let cancelled = false;
 
-    try {
-      const parsed = JSON.parse(raw) as LastSessionStats;
+    void loadHistory().then((sessions) => {
+      if (cancelled || sessions.length === 0) return;
+
+      // Headline stats stay "last session" so the card keeps its meaning;
+      // lifetime figures live on the history page.
+      const latest = sessions[0];
+      const summary = summarise(sessions);
+
       setStats({
-        reps: String(parsed.total_reps ?? '—'),
-        quality: String(parsed.avg_quality ?? '—'),
-        good: String(parsed.good_reps ?? '—'),
-        fault: parsed.most_common_fault || 'None',
+        reps: String(latest.totalReps),
+        quality: String(latest.avgQuality),
+        good: String(latest.goodReps),
+        fault: latest.topFault ?? 'None',
       });
-    } catch {
-      setStats(DEFAULT_STATS);
-    }
+      setSessionCount(summary.totalSessions);
+      setStreak(summary.currentStreakDays);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -98,7 +104,15 @@ export default function Home() {
               <div className="logo-sub">AI Fitness Coach</div>
             </div>
           </div>
-          <div className="nav-badge">v2.0 - BETA</div>
+          <div className="nav-right">
+            {sessionCount > 0 && (
+              <Link className="nav-history-link" to="/history">
+                Progress
+                {streak > 1 && <span className="nav-streak">{streak}d streak</span>}
+              </Link>
+            )}
+            <div className="nav-badge">v2.0 - BETA</div>
+          </div>
         </nav>
 
         <div className="hero anim anim-d1">
@@ -112,7 +126,14 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="section-label">Last session</div>
+        <div className="section-label">
+          Last session
+          {sessionCount > 1 && (
+            <Link className="section-link" to="/history">
+              View all {sessionCount} →
+            </Link>
+          )}
+        </div>
         <div className="stats-strip anim anim-d2">
           <div className="stat-card">
             <div className="stat-label">Total reps</div>

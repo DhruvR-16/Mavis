@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Chart } from 'chart.js/auto';
 import { usePoseDetection, type PoseLandmark } from '../hooks/usePoseDetection';
 import { CALIBRATION, TOLERANCES, getExercise, gradedPenalty } from '../engine/config';
+import { newSessionId, recordSession } from '../storage/history';
 import './Workout.css';
 
 type Landmark = {
@@ -829,16 +830,29 @@ export default function Workout() {
       fault: topFault,
     });
 
-    const payload = {
-      total_reps: stateRef.current.reps,
-      avg_quality: avg,
-      good_reps: stateRef.current.goodReps,
-      most_common_fault: topFault || 'None',
-      exercise: EXERCISE,
-      mode: MODE,
-      date: new Date().toISOString(),
-    };
-    localStorage.setItem('mavis_last_session', JSON.stringify(payload));
+    // Persist the full session to history. Fire-and-forget: a storage failure
+    // must never block the results screen.
+    if (stateRef.current.reps > 0) {
+      void recordSession({
+        id: newSessionId(),
+        date: new Date().toISOString(),
+        exercise: EXERCISE,
+        mode: MODE,
+        totalReps: stateRef.current.reps,
+        goodReps: stateRef.current.goodReps,
+        badReps: stateRef.current.badReps,
+        avgQuality: avg,
+        topFault: topFault || null,
+        durationSec: Math.round((Date.now() - stateRef.current.sessionStart) / 1000),
+        repQualities: [...qualities],
+        ...(MODE === 'program'
+          ? {
+              setsCompleted: stateRef.current.setHistory.filter((s) => s.valid).length,
+              setsPlanned: SETS,
+            }
+          : {}),
+      });
+    }
 
     setShowSummary(true);
   };
