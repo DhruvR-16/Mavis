@@ -36,6 +36,15 @@ share code today — see [Known Issues](#-known-issues).
 
 ## 🚀 Key Features
 
+### Progress tracking
+- **Every session is saved** to IndexedDB on your device — quality trend over time,
+  weekly volume, training streak, and your most frequent fault.
+- **Improvement readout**: compares the recent half of your history against the
+  earlier half, so you can see whether form is actually getting better rather
+  than guessing from one session.
+- **Stays on your device.** No account, no upload; the `/history` page reads
+  straight from local storage.
+
 ### Live coaching dashboard
 - **Real-time metrics**: rep count, good/bad split, live rep-quality score, session timer.
 - **Dynamic skeleton**: the overlay turns **green** on a clean rep and **red** the moment a fault is detected.
@@ -44,12 +53,17 @@ share code today — see [Known Issues](#-known-issues).
 
 ### Exercise library
 1. **Bicep Curls**
-   - **Range of motion**: requires full extension (>145°) and peak contraction (<60°), with a ±15° human-error tolerance band.
-   - **Tempo control**: flags reps completed faster than **0.8 s** to enforce time under tension.
-   - **Elbow stability**: flags lateral elbow drift beyond 18% of your shoulder width, measured against a calibrated anchor.
+   - **Range of motion**: requires full extension at the bottom and real contraction at the top.
+   - **Tempo control**: flags reps rushed through the whole cycle, to enforce time under tension.
+   - **Elbow stability**: flags the elbow drifting away from your side, measured relative to your own shoulder so shifting your stance isn't mistaken for a swing.
 2. **Shoulder Press**
-   - **Bilateral asymmetry**: measures both arms independently and flags an imbalance beyond 20°.
+   - **Bilateral asymmetry**: measures both arms independently and flags one arm consistently outworking the other.
    - **Lockout and depth**: validates top-range extension and bottom-range depth.
+
+> Exact thresholds are deliberately not repeated here — they live in one place,
+> [`exercises.json`](exercises.json), and are tabulated under
+> [Room for error](#-room-for-error). Restating them in prose is how the two
+> drifted apart before.
 
 ---
 
@@ -126,6 +140,10 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+```bash
+cd frontend && npm test
+```
+
 The suite replays landmark fixtures recorded from real workout video
 (`fixtures/*.json`, produced by `tools/extract_fixture.py`) through the
 analyzers and asserts rep counts, quality scores, and faults. Replay uses a
@@ -184,9 +202,27 @@ Three mechanisms keep normal variation from registering as a fault:
   it counts. Per-rep extremes are tracked with `max()`/`min()`, which by
   construction latch onto the single worst frame in a rep — so without this,
   one noisy landmark estimate was enough to fault a clean rep.
-- **Tolerances above normal variation.** Symmetry sits at 35°, above the
-  measured 35.5° median for real presses. Drift sits at 0.50 shoulder-widths
-  (~20cm of elbow travel — a visible swing, not a wobble).
+- **Tolerances above normal variation.** Each one sits clear of what real
+  lifters actually do, rather than at a textbook ideal.
+
+### Thresholds, before and after tuning
+
+These are the values the code compares against, so where a tolerance band is
+added on top of a base value the **effective** figure is shown. All are read
+from [`exercises.json`](exercises.json) at runtime by both engines.
+
+| Check | Before tuning | Now | Measured basis |
+|---|---|---|---|
+| Elbow drift | 0.18 shoulder-widths | **0.50** (~20cm of travel) | curl drift median 0.19, p75 0.39 |
+| Press asymmetry | 35° effective (20 + 15) | **50° effective** (35 + 15) | press asymmetry median 35.5° |
+| Tempo | eccentric only < 0.8 s | **full rep < 0.5 s** | full-rep median 1.24 s curl, 1.10 s press |
+| Torso swing | 25° | 25° (unchanged) | curl lean median 3.3°, p90 13° |
+| Contraction / extension | <60° / >145° | **<60° / >145°** (unchanged) | already clear of normal ROM |
+| Fault confirmation | none — 1 frame | **4 consecutive frames** | — |
+
+Drift also changed *meaning*: it is now measured relative to your own shoulder
+rather than an absolute calibrated coordinate, so the before/after numbers are
+not measuring quite the same quantity.
 
 Measured effect on the same footage:
 
@@ -219,8 +255,10 @@ This project is pre-1.0 and these are tracked, not hidden:
   module is what would let the same fixtures verify both engines agree.
 - **Angles are computed in 2D**, discarding MediaPipe's `z`. Standing off-axis to
   the camera skews every measurement.
-- **Session history is not persisted** beyond the single most recent session
-  (`localStorage`).
+- **History is per-device.** Sessions are stored in IndexedDB in the browser you
+  trained in; there is no account or cross-device sync, and clearing site data
+  clears your history. Cross-device sync is the one item here that genuinely
+  needs a backend.
 
 ---
 
@@ -242,6 +280,8 @@ tools/extract_fixture.py  Video → landmark fixture
 tools/train_bicep_lstm.py Classifier training — not currently useful, see Known Issues
 frontend/                 React web app
   src/engine/config.ts      Loads exercises.json
+  src/storage/              Session history (IndexedDB) + trend aggregations
   src/pages/Workout.tsx     Live session: pose loop, scoring, UI
   src/pages/Home.tsx        Exercise and program selection
+  src/pages/History.tsx     Progress over time
 ```
